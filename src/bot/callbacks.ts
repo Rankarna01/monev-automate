@@ -1,4 +1,5 @@
 import type { Bot, Context } from 'grammy';
+import { summarizeCommitsWithGemini } from '../ai/summarize.js';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo } from '../db/repo.js';
 import {
@@ -6,11 +7,27 @@ import {
   getWhitelistedRepos,
   toggleWhitelistedRepo,
 } from '../github/auth.js';
-import { fetchTodayCommits } from '../github/commits.js';
+import { fetchTodayCommits, type CommitSummaryItem } from '../github/commits.js';
 import type { SchedulerService } from '../scheduler/cron.js';
+import { formatScheduleDays } from '../scheduler/scheduleParser.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
-import { CALLBACK_ACTIONS } from './messages.js';
+import {
+  handleGitHubStatusAction,
+  handleRepoListAction,
+  handleRiwayatAction,
+  handleStatusAction,
+  handleTesAction,
+  type BotActionDeps,
+} from './actions.js';
+import {
+  buildDraftKeyboard,
+  buildDraftMessage,
+  buildEditInstructionMessage,
+  CALLBACK_ACTIONS,
+  DRAFT_ACTIONS,
+  MENU_ACTIONS,
+} from './messages.js';
 import { buildRepoSelectionKeyboard, getCachedRepos } from './repoKeyboard.js';
 
 /**
@@ -33,6 +50,52 @@ export function registerCallbacks(
   repo: ReportRepo,
   getScheduler: () => SchedulerService,
 ): void {
+  const deps: BotActionDeps = { config, logger, repo, getScheduler };
+
+  // === Menu Cepat dari Sapaan ("halo") ===
+  bot.callbackQuery(MENU_ACTIONS.STATUS, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleStatusAction(ctx, deps);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.TES, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleTesAction(ctx, deps);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.GITHUB, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleGitHubStatusAction(ctx, deps);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.REPO, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleRepoListAction(ctx, deps);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.RIWAYAT, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleRiwayatAction(ctx, deps);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.SCHEDULE, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const schedule = getScheduler().getCurrentSchedule();
+    await ctx.reply(
+      [
+        '🕒 *Pengaturan Jadwal Saat Ini*',
+        `• Jam: *${schedule.time} WIB*`,
+        `• Hari aktif: *${formatScheduleDays(schedule.days)}*`,
+        '',
+        'Ubah via perintah:',
+        '• `/jam 14:30`',
+        '• `/hari senin-jumat`',
+      ].join('\n'),
+      { parse_mode: 'Markdown' },
+    );
+  });
+
+  // === Alur Pengingat Harian ===
   bot.callbackQuery(CALLBACK_ACTIONS.SUMMARIZE, async (ctx) => {
     const today = getTodayWibDate();
     logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Buat Ringkasan diklik');
@@ -55,11 +118,22 @@ export function registerCallbacks(
       return;
     }
 
+    if (!config.GEMINI_API_KEY) {
+      await ctx.answerCallbackQuery({
+        text: 'GEMINI_API_KEY belum diisi di .env.',
+        show_alert: true,
+      });
+      return;
+    }
+
     try {
       await repo.createOrGetTodayReport(today, ctx.callbackQuery.message?.message_id);
       await repo.updateStatus(today, 'mengambil_data');
-      await ctx.answerCallbackQuery({ text: 'Mengambil commit GitHub hari ini...' });
-      await disableInlineButtons(ctx, '🔄 *Mengambil commit GitHub hari ini...*');
+      await ctx.answerCallbackQuery({ text: 'Menarik commit & membuat ringkasan Gemini...' });
+      await disableInlineButtons(
+        ctx,
+        '🔄 *Sedang mengambil commit GitHub & merangkum dengan Gemini...*',
+      );
 
       const result = await fetchTodayCommits({
         token: creds.token,
@@ -77,37 +151,35 @@ export function registerCallbacks(
         return;
       }
 
-      await repo.saveCommits(today, JSON.stringify(result.commits));
+      const commitsJson = JSON.stringify(result.commits);
+      await repo.saveCommits(today, commitsJson);
 
-      const summaryLines = Object.entries(result.perRepoCount).map(
-        ([repoName, count]) => `• \`${repoName}\`: *${count} commit*`,
-      );
-      const previewCommits = result.commits
-        .slice(0, 8)
-        .map((c) => `• \`${c.sha}\` (${c.repo}): ${c.message.split('\n')[0]}`);
+      const draft = await summarizeCommitsWithGemini({
+        apiKey: config.GEMINI_API_KEY,
+        model: config.GEMINI_MODEL,
+        date: today,
+        commits: result.commits,
+      });
 
-      await ctx.reply(
-        [
-          `✅ *Ditemukan ${result.commits.length} commit hari ini (\`${today}\`)*`,
-          '',
-          ...summaryLines,
-          '',
-          '*Ringkasan commit:*',
-          ...previewCommits,
-          '',
-          '_(Ringkasan AI Gemini & tombol Setujui/Edit akan dihubungkan pada Fase 5.)_',
-        ].join('\n'),
-        { parse_mode: 'Markdown' },
-      );
+      const sentDraft = await ctx.reply(buildDraftMessage(today, draft), {
+        parse_mode: 'Markdown',
+        reply_markup: buildDraftKeyboard(),
+      });
+
+      await repo.saveDraft(today, {
+        commitsJson,
+        ...draft,
+        telegramMessageId: sentDraft.message_id,
+      });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      logger.error({ err: msg, today }, 'Gagal mengambil commit GitHub');
+      logger.error({ err: msg, today }, 'Gagal membuat ringkasan');
       try {
         await repo.updateStatus(today, 'gagal', { error: msg });
       } catch {
-        // Abaikan jika state belum tercipta
+        // Abaikan jika transisi tidak memungkinkan
       }
-      await ctx.reply(`❌ Gagal mengambil commit GitHub: ${msg}`);
+      await ctx.reply(`❌ Gagal membuat ringkasan: ${msg}`);
     }
   });
 
@@ -140,7 +212,135 @@ export function registerCallbacks(
     );
   });
 
-  // Callback toggle repo whitelist dari /repo
+  // === Alur Review Draf Gemini ===
+  bot.callbackQuery(DRAFT_ACTIONS.APPROVE, async (ctx) => {
+    const today = getTodayWibDate();
+    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Setujui & Kirim diklik');
+
+    try {
+      await repo.updateStatus(today, 'mengirim');
+      await ctx.answerCallbackQuery({ text: 'Draf disetujui!' });
+      await disableInlineButtons(
+        ctx,
+        '✅ *Draf disetujui!*\n\n_(Otomasi pengisian & submit ke Monev via Playwright akan dihubungkan pada Fase 6.)_',
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn({ err: msg, today }, 'Gagal menyetujui draf');
+      await ctx.answerCallbackQuery({
+        text: 'Draf tidak dapat disetujui pada status saat ini.',
+        show_alert: true,
+      });
+    }
+  });
+
+  bot.callbackQuery(DRAFT_ACTIONS.EDIT, async (ctx) => {
+    const today = getTodayWibDate();
+    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Edit draf diklik');
+
+    try {
+      const report = await repo.getTodayReport(today);
+      if (!report) {
+        await ctx.answerCallbackQuery({ text: 'Data laporan tidak ditemukan.', show_alert: true });
+        return;
+      }
+
+      await repo.updateStatus(today, 'menunggu_edit');
+      await ctx.answerCallbackQuery({ text: 'Silakan kirim teks revisi.' });
+      await disableInlineButtons(ctx, '✏️ *Menunggu revisi teks dari kamu...*');
+
+      await ctx.reply(
+        buildEditInstructionMessage({
+          aktivitas: report.aktivitas ?? '',
+          pembelajaran: report.pembelajaran ?? '',
+          kendala: report.kendala ?? '',
+        }),
+        { parse_mode: 'Markdown' },
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn({ err: msg, today }, 'Gagal masuk mode edit');
+      await ctx.answerCallbackQuery({
+        text: 'Tidak bisa mengedit pada status saat ini.',
+        show_alert: true,
+      });
+    }
+  });
+
+  bot.callbackQuery(DRAFT_ACTIONS.REGENERATE, async (ctx) => {
+    const today = getTodayWibDate();
+    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Buat Ulang draf diklik');
+
+    if (!config.GEMINI_API_KEY) {
+      await ctx.answerCallbackQuery({
+        text: 'GEMINI_API_KEY belum diisi di .env.',
+        show_alert: true,
+      });
+      return;
+    }
+
+    try {
+      const report = await repo.getTodayReport(today);
+      if (!report || !report.commits_json) {
+        await ctx.answerCallbackQuery({
+          text: 'Data commit tidak ditemukan. Mulai ulang dengan /tes.',
+          show_alert: true,
+        });
+        return;
+      }
+
+      const commits = JSON.parse(report.commits_json) as CommitSummaryItem[];
+      await repo.updateStatus(today, 'mengambil_data');
+      await ctx.answerCallbackQuery({ text: 'Membuat ulang draf dengan Gemini...' });
+      await disableInlineButtons(ctx, '🔄 *Membuat ulang draf dengan Gemini...*');
+
+      const draft = await summarizeCommitsWithGemini({
+        apiKey: config.GEMINI_API_KEY,
+        model: config.GEMINI_MODEL,
+        date: today,
+        commits,
+      });
+
+      const sentDraft = await ctx.reply(buildDraftMessage(today, draft), {
+        parse_mode: 'Markdown',
+        reply_markup: buildDraftKeyboard(),
+      });
+
+      await repo.saveDraft(today, {
+        ...draft,
+        telegramMessageId: sentDraft.message_id,
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error({ err: msg, today }, 'Gagal membuat ulang draf');
+      try {
+        await repo.updateStatus(today, 'gagal', { error: msg });
+      } catch {
+        // Abaikan jika transisi gagal
+      }
+      await ctx.reply(`❌ Gagal membuat ulang draf: ${msg}`);
+    }
+  });
+
+  bot.callbackQuery(DRAFT_ACTIONS.CANCEL, async (ctx) => {
+    const today = getTodayWibDate();
+    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Batal draf diklik');
+
+    try {
+      await repo.updateStatus(today, 'dilewati');
+      await ctx.answerCallbackQuery({ text: 'Draf dibatalkan.' });
+      await disableInlineButtons(ctx, '❌ *Draf laporan hari ini dibatalkan.*');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn({ err: msg, today }, 'Gagal membatalkan draf');
+      await ctx.answerCallbackQuery({
+        text: 'Tidak dapat membatalkan pada status saat ini.',
+        show_alert: true,
+      });
+    }
+  });
+
+  // === Callback Toggle & Pagination Repo Whitelist ===
   bot.callbackQuery(/^repo_tg:(\d+):(\d+)$/, async (ctx) => {
     const idx = Number(ctx.match[1]);
     const page = Number(ctx.match[2]);
@@ -182,7 +382,6 @@ export function registerCallbacks(
     );
   });
 
-  // Callback pagination /repo
   bot.callbackQuery(/^repo_page:(\d+)$/, async (ctx) => {
     const page = Number(ctx.match[1]);
     const cached = getCachedRepos();

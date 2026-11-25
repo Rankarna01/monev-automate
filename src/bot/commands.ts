@@ -1,10 +1,8 @@
 import type { Bot } from 'grammy';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo } from '../db/repo.js';
-import { formatStatusLabel } from '../db/stateMachine.js';
 import {
   clearGitHubCredentials,
-  getGitHubCredentials,
   getWhitelistedRepos,
   pollDeviceAccessToken,
   requestDeviceCode,
@@ -12,7 +10,7 @@ import {
   saveWhitelistedRepos,
   validateGitHubToken,
 } from '../github/auth.js';
-import { listAccessibleRepos, parseRepoFullName } from '../github/commits.js';
+import { parseRepoFullName } from '../github/commits.js';
 import type { SchedulerService } from '../scheduler/cron.js';
 import {
   formatScheduleDays,
@@ -21,15 +19,27 @@ import {
 } from '../scheduler/scheduleParser.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
+import { parseDraftEditText, validateDraft } from '../utils/validate.js';
 import {
-  buildReminderKeyboard,
-  buildReminderMessage,
+  handleGitHubStatusAction,
+  handleRepoListAction,
+  handleRiwayatAction,
+  handleStatusAction,
+  handleTesAction,
+  type BotActionDeps,
+} from './actions.js';
+import {
+  buildDraftKeyboard,
+  buildDraftMessage,
+  buildGreetingMenuKeyboard,
+  buildGreetingMessage,
   buildStartMessage,
 } from './messages.js';
-import { buildRepoSelectionKeyboard, setCachedRepos } from './repoKeyboard.js';
+
+const GREETING_REGEX = /^(halo+|hallo+|hai+|hi+|pagi|siang|sore|malam|menu|help|p)$/i;
 
 /**
- * Mendaftarkan perintah slash bot Telegram.
+ * Mendaftarkan perintah slash bot Telegram dan handler pesan teks (sapaan & edit draf).
  */
 export function registerCommands(
   bot: Bot,
@@ -38,6 +48,8 @@ export function registerCommands(
   repo: ReportRepo,
   getScheduler: () => SchedulerService,
 ): void {
+  const deps: BotActionDeps = { config, logger, repo, getScheduler };
+
   bot.command('start', async (ctx) => {
     logger.info({ chatId: ctx.chat.id }, 'Perintah /start diterima');
     const schedule = getScheduler().getCurrentSchedule();
@@ -48,32 +60,8 @@ export function registerCommands(
   });
 
   bot.command('status', async (ctx) => {
-    const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat.id, today }, 'Perintah /status diterima');
-
-    const report = await repo.getTodayReport(today);
-    const schedule = getScheduler().getCurrentSchedule();
-    const creds = await getGitHubCredentials(config, repo);
-    const whitelist = await getWhitelistedRepos(config, repo);
-    const statusText = report
-      ? formatStatusLabel(report.status)
-      : 'Belum ada aktivitas hari ini';
-
-    const lines = [
-      '📊 *Status Bot & Laporan*',
-      `• Tanggal (WIB): \`${today}\``,
-      `• Status laporan: *${statusText}*`,
-      `• Jadwal: *${schedule.time} WIB* (${formatScheduleDays(schedule.days)})`,
-      `• GitHub: ${creds ? `✅ Terhubung (\`${creds.username || 'token aktif'}\`)` : '❌ Belum terhubung (`/github`)'}`,
-      `• Repo whitelist: *${whitelist.length} repo*`,
-      `• Mode Dry Run Monev: \`${config.DRY_RUN ? 'aktif' : 'nonaktif'}\``,
-    ];
-
-    if (report?.error) {
-      lines.push(`• Error terakhir: \`${report.error}\``);
-    }
-
-    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    logger.info({ chatId: ctx.chat.id }, 'Perintah /status diterima');
+    await handleStatusAction(ctx, deps);
   });
 
   bot.command('jam', async (ctx) => {
@@ -136,43 +124,7 @@ export function registerCommands(
     const arg = rest.join(' ').trim();
 
     if (!sub || sub === 'status') {
-      const creds = await getGitHubCredentials(config, repo);
-      if (creds) {
-        try {
-          const info = await validateGitHubToken(creds.token);
-          await ctx.reply(
-            [
-              '🐙 *Status Akun GitHub*',
-              `• Status: ✅ *Terhubung*`,
-              `• Username: \`${info.login}\`${info.name ? ` (${info.name})` : ''}`,
-              '',
-              'Gunakan `/repo` untuk memilih repository whitelist.',
-              'Gunakan `/github logout` untuk memutus koneksi.',
-            ].join('\n'),
-            { parse_mode: 'Markdown' },
-          );
-          return;
-        } catch {
-          await ctx.reply(
-            '⚠️ Token GitHub tersimpan tapi sudah tidak valid. Hubungkan ulang via `/github login` atau `/github token <PAT>`.',
-            { parse_mode: 'Markdown' },
-          );
-          return;
-        }
-      }
-
-      await ctx.reply(
-        [
-          '🐙 *Akun GitHub belum terhubung*',
-          '',
-          'Cara menghubungkan:',
-          '1. *Login via Browser (OAuth Device Flow — bisa pakai akun Google GitHub):*',
-          '   Kirim `/github login` (butuh `GITHUB_CLIENT_ID` di `.env`)',
-          '2. *Pakai Fine-grained PAT (langsung tanpa OAuth App):*',
-          '   Kirim `/github token <PAT_KAMU>`',
-        ].join('\n'),
-        { parse_mode: 'Markdown' },
-      );
+      await handleGitHubStatusAction(ctx, deps);
       return;
     }
 
@@ -302,84 +254,89 @@ export function registerCommands(
       return;
     }
 
-    const creds = await getGitHubCredentials(config, repo);
-    if (!creds) {
-      await ctx.reply(
-        '❌ Akun GitHub belum terhubung. Kirim `/github` terlebih dahulu.',
-        { parse_mode: 'Markdown' },
-      );
-      return;
-    }
-
-    try {
-      const accessible = await listAccessibleRepos(creds.token);
-      if (accessible.length === 0) {
-        await ctx.reply('ℹ️ Tidak ada repository yang dapat diakses oleh token GitHub ini.');
-        return;
-      }
-
-      setCachedRepos(accessible);
-      const whitelisted = await getWhitelistedRepos(config, repo);
-      const { keyboard, totalPages, currentPage } = buildRepoSelectionKeyboard(
-        accessible,
-        whitelisted,
-        0,
-      );
-
-      await ctx.reply(
-        `📚 *Pilih Repository Whitelist* (Halaman ${currentPage + 1}/${totalPages})\nAktif saat ini: *${whitelisted.length} repo*\n\nKlik tombol untuk mengaktifkan/menonaktifkan:`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: keyboard,
-        },
-      );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      await ctx.reply(`❌ Gagal mengambil daftar repo GitHub: ${msg}`);
-    }
+    await handleRepoListAction(ctx, deps);
   });
 
   bot.command('riwayat', async (ctx) => {
     logger.info({ chatId: ctx.chat.id }, 'Perintah /riwayat diterima');
-    const reports = await repo.getRecentReports(7);
-
-    if (reports.length === 0) {
-      await ctx.reply('🗂️ Belum ada riwayat laporan tersimpan di database.');
-      return;
-    }
-
-    const rows = reports.map(
-      (r) => `• \`${r.date}\` — ${formatStatusLabel(r.status)}`,
-    );
-
-    await ctx.reply(['🗂️ *7 Laporan Terakhir*', '', ...rows].join('\n'), {
-      parse_mode: 'Markdown',
-    });
+    await handleRiwayatAction(ctx, deps);
   });
 
   bot.command('tes', async (ctx) => {
-    const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat.id, today }, 'Perintah /tes diterima');
+    logger.info({ chatId: ctx.chat.id }, 'Perintah /tes diterima');
+    await handleTesAction(ctx, deps);
+  });
 
-    const existing = await repo.getTodayReport(today);
-    if (
-      existing &&
-      (existing.status === 'terkirim' ||
-        existing.status === 'dilewati' ||
-        existing.status === 'kedaluwarsa')
-    ) {
+  // Handler pesan teks biasa: alur Edit draf & sapaan ("halo", "menu", dll)
+  bot.on('message:text', async (ctx) => {
+    const text = ctx.message.text.trim();
+    if (text.startsWith('/')) return;
+
+    const today = getTodayWibDate();
+    const report = await repo.getTodayReport(today);
+
+    if (report?.status === 'menunggu_edit') {
+      const existingDraft = {
+        aktivitas: report.aktivitas ?? '',
+        pembelajaran: report.pembelajaran ?? '',
+        kendala: report.kendala ?? '',
+      };
+
+      const { parsed, matchedAnyHeader } = parseDraftEditText(text, existingDraft);
+      if (!matchedAnyHeader) {
+        await ctx.reply(
+          '⚠️ Format revisi tidak dikenali. Awali dengan `Aktivitas:`, `Pembelajaran:`, atau `Kendala:` (boleh salah satu saja).',
+          { parse_mode: 'Markdown' },
+        );
+        return;
+      }
+
+      const validation = validateDraft(parsed);
+      if (!validation.success) {
+        await ctx.reply(
+          [
+            '❌ *Revisi belum memenuhi syarat (minimal 100 karakter per field):*',
+            ...validation.errors.map((e) => `• ${e}`),
+            '',
+            'Silakan kirim ulang teks revisinya.',
+          ].join('\n'),
+          { parse_mode: 'Markdown' },
+        );
+        return;
+      }
+
+      const sent = await ctx.reply(buildDraftMessage(today, validation.data), {
+        parse_mode: 'Markdown',
+        reply_markup: buildDraftKeyboard(),
+      });
+
+      await repo.saveDraft(today, {
+        ...validation.data,
+        telegramMessageId: sent.message_id,
+      });
+      return;
+    }
+
+    if (GREETING_REGEX.test(text)) {
+      const schedule = getScheduler().getCurrentSchedule();
       await ctx.reply(
-        `ℹ️ Laporan tanggal \`${today}\` sudah berstatus *${formatStatusLabel(existing.status)}*.`,
-        { parse_mode: 'Markdown' },
+        buildGreetingMessage(schedule.time, formatScheduleDays(schedule.days)),
+        {
+          parse_mode: 'Markdown',
+          reply_markup: buildGreetingMenuKeyboard(),
+        },
       );
       return;
     }
 
-    const sent = await ctx.reply(buildReminderMessage(today), {
-      parse_mode: 'Markdown',
-      reply_markup: buildReminderKeyboard(),
-    });
-
-    await repo.createOrGetTodayReport(today, sent.message_id);
+    // Untuk pesan teks lain yang tidak dikenal, tampilkan menu cepat
+    const schedule = getScheduler().getCurrentSchedule();
+    await ctx.reply(
+      buildGreetingMessage(schedule.time, formatScheduleDays(schedule.days)),
+      {
+        parse_mode: 'Markdown',
+        reply_markup: buildGreetingMenuKeyboard(),
+      },
+    );
   });
 }

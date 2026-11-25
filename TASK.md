@@ -102,14 +102,14 @@ Dokumen ini memecah [PLAN.md](file:///Users/calvin/KINRA/monev-automate/PLAN.md)
 
 > *Catatan: Setelah fase ini selesai, sistem sudah usable untuk menghasilkan draf siap salin manual ke Monev.*
 
-- [ ] Susun system prompt & formatter input di `src/ai/prompt.ts` (bahasa Indonesia formal ringkas, hanya berdasarkan fakta commit, output JSON `{ aktivitas, pembelajaran, kendala }`)
-- [ ] Implementasikan `src/utils/validate.ts` untuk memvalidasi panjang minimal 100 karakter pada tiap field
-- [ ] Implementasikan `src/ai/summarize.ts` menggunakan `@google/genai` (`responseMimeType: "application/json"`), parse JSON + validasi schema `zod` + cek ≥ 100 karakter
-- [ ] Tambahkan mekanisme retry otomatis (maksimal 2x) jika output bukan JSON valid atau ada field < 100 karakter
-- [ ] Tampilkan draf (`aktivitas`, `pembelajaran`, `kendala`) ke Telegram dengan tombol: `Setujui & Kirim`, `Edit`, `Buat Ulang`, `Batal`
-- [ ] Implementasikan alur **Edit** (`menunggu_edit` → terima teks revisi user → validasi ulang → kembali ke `draf_siap`)
-- [ ] Implementasikan alur **Buat Ulang** (panggil ulang Gemini, nonaktifkan tombol draf lama)
-- [ ] Implementasikan alur **Batal**
+- [x] Susun system prompt & formatter input di `src/ai/prompt.ts` (bahasa Indonesia formal ringkas, hanya berdasarkan fakta commit, output JSON `{ aktivitas, pembelajaran, kendala }`)
+- [x] Implementasikan `src/utils/validate.ts` untuk memvalidasi panjang minimal 100 karakter pada tiap field
+- [x] Implementasikan `src/ai/summarize.ts` menggunakan `@google/genai` (`responseMimeType: "application/json"`), parse JSON + validasi schema `zod` + cek ≥ 100 karakter
+- [x] Tambahkan mekanisme retry otomatis (maksimal 2x) jika output bukan JSON valid atau ada field < 100 karakter
+- [x] Tampilkan draf (`aktivitas`, `pembelajaran`, `kendala`) ke Telegram dengan tombol: `Setujui & Kirim`, `Edit`, `Buat Ulang`, `Batal`
+- [x] Implementasikan alur **Edit** (`menunggu_edit` → terima teks revisi user → validasi ulang → kembali ke `draf_siap`)
+- [x] Implementasikan alur **Buat Ulang** (panggil ulang Gemini, nonaktifkan tombol draf lama)
+- [x] Implementasikan alur **Batal**
 
 **Kriteria Selesai:** Pengujian menghasilkan draf JSON valid dengan seluruh field ≥ 100 karakter sesuai isi commit, serta alur Edit/Buat Ulang/Batal berfungsi penuh.
 
