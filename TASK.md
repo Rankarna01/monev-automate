@@ -84,13 +84,13 @@ Dokumen ini memecah [PLAN.md](file:///Users/calvin/KINRA/monev-automate/PLAN.md)
 
 **Target:** Mengambil commit hari ini (WIB) dari repo whitelist secara aman (hanya pesan commit & daftar file, tanpa diff).
 
-- [ ] Implementasikan `src/github/commits.ts` menggunakan `@octokit/rest`
-- [ ] Implementasikan manajemen whitelist repo dari perintah `/repo` (`tambah`, `hapus`, lihat daftar) yang tersimpan di `settings`
-- [ ] Ambil commit berdasarkan rentang tanggal hari ini dalam zona WIB (`Asia/Jakarta`) dan filter `author` sesuai `GITHUB_USERNAME`
-- [ ] Ambil daftar nama file yang berubah per commit (tanpa isi diff penuh)
-- [ ] Gabungkan hasil commit lintas repo whitelist dan urutkan berdasarkan waktu
-- [ ] Tangani kondisi: tidak ada commit hari itu (hentikan alur & kirim info ke Telegram), rate limit, atau token tidak valid
-- [ ] Tulis unit test parsing & pengurutan commit dengan data tiruan (`vitest`)
+- [x] Implementasikan `src/github/auth.ts` (OAuth Device Flow `/github login` & PAT `/github token`) dan `src/github/commits.ts` menggunakan `@octokit/rest`
+- [x] Implementasikan manajemen whitelist repo dari perintah `/repo` (tombol inline toggle + `tambah` / `hapus`) yang tersimpan di `settings`
+- [x] Ambil commit berdasarkan rentang tanggal hari ini dalam zona WIB (`Asia/Jakarta`) dan filter `author` sesuai `GITHUB_USERNAME`
+- [x] Ambil daftar nama file yang berubah per commit (tanpa isi diff penuh)
+- [x] Gabungkan hasil commit lintas repo whitelist dan urutkan berdasarkan waktu
+- [x] Tangani kondisi: tidak ada commit hari itu (hentikan alur & kirim info ke Telegram), rate limit, atau token tidak valid
+- [x] Tulis unit test parsing & pengurutan commit dengan data tiruan (`vitest`)
 
 **Kriteria Selesai:** Perintah `/tes` menarik dan menampilkan jumlah commit yang akurat per repo untuk hari ini.
 

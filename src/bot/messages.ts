@@ -34,6 +34,8 @@ export function buildStartMessage(scheduleTime: string, scheduleDaysLabel?: stri
     '• `/status` — Cek status laporan hari ini',
     '• `/jam <HH:MM>` — Ubah jam pengingat harian',
     '• `/hari <hari>` — Atur hari aktif (mis. `senin-jumat`)',
+    '• `/github` — Hubungkan / cek akun GitHub',
+    '• `/repo` — Pilih repo whitelist lewat tombol',
     '• `/riwayat` — Lihat 7 laporan terakhir',
     '• `/tes` — Uji coba kirim tombol pengingat harian',
   ].join('\n');

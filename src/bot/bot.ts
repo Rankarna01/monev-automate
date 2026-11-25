@@ -36,7 +36,7 @@ export function createBot(
   });
 
   registerCommands(bot, config, logger, repo, getScheduler);
-  registerCallbacks(bot, logger, repo, getScheduler);
+  registerCallbacks(bot, config, logger, repo, getScheduler);
 
   bot.catch((err) => {
     logger.error({ err: err.error, updateId: err.ctx.update.update_id }, 'Error pada bot Telegram');
