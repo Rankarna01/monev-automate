@@ -202,7 +202,7 @@ export async function handleGeminiStatusAction(ctx: Context, deps: BotActionDeps
         '',
         'Perintah pengaturan:',
         '• `/gemini key <API_KEY>` — Ganti API key',
-        '• `/gemini model <NAMA_MODEL>` — Ganti model (mis. `gemini-2.5-flash`)',
+        '• `/gemini model <NAMA_MODEL>` — Ganti model (mis. `gemini-3.8-flash`)',
         '• `/gemini hapus` — Hapus API key dinamis dari database',
       ].join('\n'),
       { parse_mode: 'Markdown' },

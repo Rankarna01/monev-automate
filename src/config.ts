@@ -38,7 +38,7 @@ const envSchema = z.object({
 
   // Gemini (Fase 5)
   GEMINI_API_KEY: z.string().trim().optional().default(''),
-  GEMINI_MODEL: z.string().trim().optional().default('gemini-2.5-flash'),
+  GEMINI_MODEL: z.string().trim().optional().default('gemini-3.8-flash'),
 
   // Monev (Fase 6)
   MONEV_URL: z.string().trim().optional().default(''),

@@ -304,7 +304,7 @@ export function registerCommands(
 
     if (sub === 'model') {
       if (!arg) {
-        await ctx.reply('Gunakan: `/gemini model gemini-2.5-flash`', {
+        await ctx.reply('Gunakan: `/gemini model gemini-3.8-flash`', {
           parse_mode: 'Markdown',
         });
         return;
