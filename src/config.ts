@@ -63,12 +63,9 @@ const envSchema = z.object({
     .optional()
     .default('info'),
 
-  // MySQL (Fase 2)
-  MYSQL_HOST: z.string().trim().optional().default('127.0.0.1'),
-  MYSQL_PORT: z.coerce.number().int().positive().optional().default(3306),
-  MYSQL_USER: z.string().trim().optional().default('root'),
-  MYSQL_PASSWORD: z.string().optional().default(''),
-  MYSQL_DATABASE: z.string().trim().optional().default('monev_bot'),
+  // Supabase (Database)
+  SUPABASE_URL: z.string().trim().optional().default(''),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().trim().optional().default(''),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

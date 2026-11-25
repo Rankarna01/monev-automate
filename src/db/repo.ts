@@ -1,4 +1,4 @@
-import type { Pool, RowDataPacket } from 'mysql2/promise';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { assertValidTransition, type ReportStatus } from './stateMachine.js';
 
 export interface ReportRecord {
@@ -11,16 +11,9 @@ export interface ReportRecord {
   kendala: string | null;
   telegram_message_id: number | null;
   error: string | null;
-  created_at: Date;
-  updated_at: Date;
-  submitted_at: Date | null;
-}
-
-interface ReportRow extends RowDataPacket, ReportRecord {}
-
-interface SettingRow extends RowDataPacket {
-  key_name: string;
-  value: string;
+  created_at: string;
+  updated_at: string;
+  submitted_at: string | null;
 }
 
 export interface DraftInput {
@@ -53,15 +46,21 @@ export interface ReportRepo {
 }
 
 /**
- * Membuat repository query untuk tabel `reports` dan `settings` di MySQL.
+ * Membuat repository query untuk tabel `reports` dan `settings` di Supabase.
  */
-export function createReportRepo(pool: Pool): ReportRepo {
+export function createReportRepo(client: SupabaseClient): ReportRepo {
   async function getTodayReport(date: string): Promise<ReportRecord | null> {
-    const [rows] = await pool.query<ReportRow[]>(
-      'SELECT * FROM reports WHERE date = ? LIMIT 1',
-      [date],
-    );
-    return rows[0] ?? null;
+    const { data, error } = await client
+      .from('reports')
+      .select('*')
+      .eq('date', date)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Gagal membaca laporan ${date}: ${error.message}`);
+    }
+
+    return (data as ReportRecord | null) ?? null;
   }
 
   async function createOrGetTodayReport(
@@ -70,23 +69,43 @@ export function createReportRepo(pool: Pool): ReportRepo {
   ): Promise<ReportRecord> {
     const existing = await getTodayReport(date);
     if (existing) {
-      if (telegramMessageId !== undefined && existing.telegram_message_id !== telegramMessageId) {
-        await pool.query(
-          'UPDATE reports SET telegram_message_id = ? WHERE date = ?',
-          [telegramMessageId, date],
-        );
-        return (await getTodayReport(date))!;
+      if (
+        telegramMessageId !== undefined &&
+        existing.telegram_message_id !== telegramMessageId
+      ) {
+        const { data, error } = await client
+          .from('reports')
+          .update({
+            telegram_message_id: telegramMessageId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('date', date)
+          .select('*')
+          .single();
+
+        if (error) {
+          throw new Error(`Gagal memperbarui message_id: ${error.message}`);
+        }
+        return data as ReportRecord;
       }
       return existing;
     }
 
-    await pool.query(
-      `INSERT INTO reports (date, status, telegram_message_id)
-       VALUES (?, 'menunggu_trigger', ?)`,
-      [date, telegramMessageId ?? null],
-    );
+    const { data, error } = await client
+      .from('reports')
+      .insert({
+        date,
+        status: 'menunggu_trigger',
+        telegram_message_id: telegramMessageId ?? null,
+      })
+      .select('*')
+      .single();
 
-    return (await getTodayReport(date))!;
+    if (error) {
+      throw new Error(`Gagal membuat laporan ${date}: ${error.message}`);
+    }
+
+    return data as ReportRecord;
   }
 
   async function updateStatus(
@@ -104,21 +123,32 @@ export function createReportRepo(pool: Pool): ReportRepo {
 
     assertValidTransition(current.status, nextStatus);
 
-    const submittedAtClause = nextStatus === 'terkirim' ? ', submitted_at = NOW()' : '';
-    const nextError = extra?.error !== undefined ? extra.error : current.error;
-    const nextMsgId =
-      extra?.telegramMessageId !== undefined
-        ? extra.telegramMessageId
-        : current.telegram_message_id;
+    const payload: Record<string, unknown> = {
+      status: nextStatus,
+      error: extra?.error !== undefined ? extra.error : current.error,
+      telegram_message_id:
+        extra?.telegramMessageId !== undefined
+          ? extra.telegramMessageId
+          : current.telegram_message_id,
+      updated_at: new Date().toISOString(),
+    };
 
-    await pool.query(
-      `UPDATE reports
-       SET status = ?, error = ?, telegram_message_id = ?${submittedAtClause}
-       WHERE date = ?`,
-      [nextStatus, nextError, nextMsgId, date],
-    );
+    if (nextStatus === 'terkirim') {
+      payload.submitted_at = new Date().toISOString();
+    }
 
-    return (await getTodayReport(date))!;
+    const { data, error } = await client
+      .from('reports')
+      .update(payload)
+      .eq('date', date)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(`Gagal memperbarui status ${date}: ${error.message}`);
+    }
+
+    return data as ReportRecord;
   }
 
   async function saveDraft(date: string, draft: DraftInput): Promise<ReportRecord> {
@@ -129,60 +159,89 @@ export function createReportRepo(pool: Pool): ReportRepo {
 
     assertValidTransition(current.status, 'draf_siap');
 
-    await pool.query(
-      `UPDATE reports
-       SET status = 'draf_siap',
-           commits_json = COALESCE(?, commits_json),
-           aktivitas = ?,
-           pembelajaran = ?,
-           kendala = ?,
-           telegram_message_id = COALESCE(?, telegram_message_id),
-           error = NULL
-       WHERE date = ?`,
-      [
-        draft.commitsJson ?? null,
-        draft.aktivitas,
-        draft.pembelajaran,
-        draft.kendala,
-        draft.telegramMessageId ?? null,
-        date,
-      ],
-    );
+    const { data, error } = await client
+      .from('reports')
+      .update({
+        status: 'draf_siap',
+        commits_json: draft.commitsJson ?? current.commits_json,
+        aktivitas: draft.aktivitas,
+        pembelajaran: draft.pembelajaran,
+        kendala: draft.kendala,
+        telegram_message_id:
+          draft.telegramMessageId ?? current.telegram_message_id,
+        error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('date', date)
+      .select('*')
+      .single();
 
-    return (await getTodayReport(date))!;
+    if (error) {
+      throw new Error(`Gagal menyimpan draf ${date}: ${error.message}`);
+    }
+
+    return data as ReportRecord;
   }
 
   async function saveCommits(date: string, commitsJson: string): Promise<ReportRecord> {
-    await pool.query(
-      'UPDATE reports SET commits_json = ? WHERE date = ?',
-      [commitsJson, date],
-    );
-    return (await getTodayReport(date))!;
+    const { data, error } = await client
+      .from('reports')
+      .update({
+        commits_json: commitsJson,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('date', date)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(`Gagal menyimpan commits ${date}: ${error.message}`);
+    }
+
+    return data as ReportRecord;
   }
 
   async function getRecentReports(limit: number = 7): Promise<ReportRecord[]> {
-    const [rows] = await pool.query<ReportRow[]>(
-      'SELECT * FROM reports ORDER BY date DESC LIMIT ?',
-      [limit],
-    );
-    return rows;
+    const { data, error } = await client
+      .from('reports')
+      .select('*')
+      .order('date', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      throw new Error(`Gagal mengambil riwayat laporan: ${error.message}`);
+    }
+
+    return (data as ReportRecord[] | null) ?? [];
   }
 
   async function getSetting(key: string): Promise<string | null> {
-    const [rows] = await pool.query<SettingRow[]>(
-      'SELECT key_name, value FROM settings WHERE key_name = ? LIMIT 1',
-      [key],
-    );
-    return rows[0]?.value ?? null;
+    const { data, error } = await client
+      .from('settings')
+      .select('value')
+      .eq('key_name', key)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Gagal membaca setting ${key}: ${error.message}`);
+    }
+
+    return (data as { value: string } | null)?.value ?? null;
   }
 
   async function setSetting(key: string, value: string): Promise<void> {
-    await pool.query(
-      `INSERT INTO settings (key_name, value)
-       VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE value = VALUES(value)`,
-      [key, value],
+    const { error } = await client.from('settings').upsert(
+      {
+        key_name: key,
+        value,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'key_name' },
     );
+
+    if (error) {
+      throw new Error(`Gagal menyimpan setting ${key}: ${error.message}`);
+    }
   }
 
   return {

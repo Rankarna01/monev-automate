@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const logger = createLogger(config.LOG_LEVEL);
 
   const db = await initDatabase(config, logger);
-  const repo = createReportRepo(db.pool);
+  const repo = createReportRepo(db.client);
 
   // Pemulihan state saat bot restart
   const today = getTodayWibDate();
