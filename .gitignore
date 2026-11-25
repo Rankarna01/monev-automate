@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+dist/
+
+# Environment & Secrets
+.env
+.env.local
+
+# Local Data (SQLite & Playwright browser profile)
+data/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
