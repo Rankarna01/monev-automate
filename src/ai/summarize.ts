@@ -3,7 +3,13 @@ import type { CommitSummaryItem } from '../github/commits.js';
 import { validateDraft, type ReportDraft } from '../utils/validate.js';
 import { buildCommitsPromptInput, SYSTEM_PROMPT } from './prompt.js';
 
-const MAX_RETRIES = 2;
+const MAX_VALIDATION_RETRIES = 2;
+const FALLBACK_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+];
 
 export interface SummarizeOptions {
   apiKey: string;
@@ -21,16 +27,70 @@ export function extractJsonString(raw: string): string {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
+function isTransientOrUnavailableError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return (
+    msg.includes('503') ||
+    msg.includes('429') ||
+    msg.includes('UNAVAILABLE') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('404') ||
+    msg.includes('NOT_FOUND')
+  );
+}
+
+async function generateWithFallback(
+  ai: GoogleGenAI,
+  primaryModel: string,
+  promptInput: string,
+): Promise<string> {
+  const modelsToTry = Array.from(new Set([primaryModel, ...FALLBACK_MODELS]));
+  let lastError: unknown;
+
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const model = modelsToTry[i];
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: promptInput,
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              aktivitas: { type: Type.STRING },
+              pembelajaran: { type: Type.STRING },
+              kendala: { type: Type.STRING },
+            },
+            required: ['aktivitas', 'pembelajaran', 'kendala'],
+          },
+        },
+      });
+      return response.text ?? '';
+    } catch (error) {
+      lastError = error;
+      if (!isTransientOrUnavailableError(error) || i === modelsToTry.length - 1) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)));
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 /**
  * Merangkum daftar commit menjadi 3 field laporan Monev menggunakan Gemini API,
- * lengkap dengan validasi zod (>= 100 karakter) dan retry otomatis maksimal 2 kali.
+ * lengkap dengan fallback model jika 503/high-demand, validasi zod (>= 100 karakter),
+ * dan retry otomatis maksimal 2 kali.
  */
 export async function summarizeCommitsWithGemini(
   options: SummarizeOptions,
 ): Promise<ReportDraft> {
   if (!options.apiKey) {
     throw new Error(
-      'GEMINI_API_KEY belum diisi di file .env. Isi terlebih dahulu untuk membuat ringkasan AI.',
+      'GEMINI_API_KEY belum diatur. Atur lewat /gemini key <API_KEY> di Telegram.',
     );
   }
 
@@ -42,32 +102,14 @@ export async function summarizeCommitsWithGemini(
   let retryHint: string | undefined;
   let lastErrors: string[] = [];
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MAX_VALIDATION_RETRIES; attempt++) {
     const promptInput = buildCommitsPromptInput(
       options.date,
       options.commits,
       retryHint,
     );
 
-    const response = await ai.models.generateContent({
-      model: options.model,
-      contents: promptInput,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            aktivitas: { type: Type.STRING },
-            pembelajaran: { type: Type.STRING },
-            kendala: { type: Type.STRING },
-          },
-          required: ['aktivitas', 'pembelajaran', 'kendala'],
-        },
-      },
-    });
-
-    const rawText = response.text ?? '';
+    const rawText = await generateWithFallback(ai, options.model, promptInput);
 
     let parsedJson: unknown;
     try {
@@ -88,6 +130,6 @@ export async function summarizeCommitsWithGemini(
   }
 
   throw new Error(
-    `Ringkasan Gemini gagal validasi setelah ${MAX_RETRIES + 1} percobaan: ${lastErrors.join('; ')}`,
+    `Ringkasan Gemini gagal validasi setelah ${MAX_VALIDATION_RETRIES + 1} percobaan: ${lastErrors.join('; ')}`,
   );
 }

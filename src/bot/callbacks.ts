@@ -1,4 +1,4 @@
-import type { Bot, Context } from 'grammy';
+import { InlineKeyboard, type Bot, type Context } from 'grammy';
 import { getGeminiCredentials } from '../ai/config.js';
 import { summarizeCommitsWithGemini } from '../ai/summarize.js';
 import type { AppConfig } from '../config.js';
@@ -187,7 +187,9 @@ export function registerCallbacks(
       } catch {
         // Abaikan jika transisi tidak memungkinkan
       }
-      await ctx.reply(`❌ Gagal membuat ringkasan: ${msg}`);
+      await ctx.reply(`❌ Gagal membuat ringkasan: ${msg}`, {
+        reply_markup: new InlineKeyboard().text('🔄 Coba Lagi', CALLBACK_ACTIONS.SUMMARIZE),
+      });
     }
   });
 
