@@ -2,6 +2,7 @@ import { createBot } from './bot/bot.js';
 import { loadConfig } from './config.js';
 import { initDatabase } from './db/db.js';
 import { createReportRepo } from './db/repo.js';
+import { createScheduler, type SchedulerService } from './scheduler/cron.js';
 import { createLogger } from './utils/logger.js';
 import { getTodayWibDate } from './utils/time.js';
 
@@ -26,10 +27,13 @@ async function main(): Promise<void> {
     );
   }
 
-  const bot = createBot(config, logger, repo);
+  let scheduler: SchedulerService;
+  const bot = createBot(config, logger, repo, () => scheduler);
+  scheduler = createScheduler(bot, config, logger, repo);
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Mematikan bot dengan aman...');
+    scheduler.stop();
     await bot.stop();
     await db.close();
     process.exit(0);
@@ -38,10 +42,12 @@ async function main(): Promise<void> {
   process.once('SIGINT', () => void shutdown('SIGINT'));
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
 
+  await scheduler.start();
+
   logger.info(
     {
       tz: config.TZ,
-      scheduleTime: config.SCHEDULE_TIME,
+      scheduleTime: scheduler.getCurrentSchedule().time,
       dryRun: config.DRY_RUN,
     },
     'Menjalankan bot Telegram (long polling)...',

@@ -1,5 +1,6 @@
 import type { Bot, Context } from 'grammy';
 import type { ReportRepo } from '../db/repo.js';
+import type { SchedulerService } from '../scheduler/cron.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
 import { CALLBACK_ACTIONS } from './messages.js';
@@ -21,6 +22,7 @@ export function registerCallbacks(
   bot: Bot,
   logger: Logger,
   repo: ReportRepo,
+  getScheduler: () => SchedulerService,
 ): void {
   bot.callbackQuery(CALLBACK_ACTIONS.SUMMARIZE, async (ctx) => {
     const today = getTodayWibDate();
@@ -65,10 +67,11 @@ export function registerCallbacks(
 
   bot.callbackQuery(CALLBACK_ACTIONS.SNOOZE_30M, async (ctx) => {
     logger.info({ chatId: ctx.chat?.id }, 'Tombol Ingatkan 30 menit diklik');
+    getScheduler().scheduleSnooze(30);
     await ctx.answerCallbackQuery({ text: 'Oke, diingatkan 30 menit lagi.' });
     await disableInlineButtons(
       ctx,
-      '⏰ *Pengingat ditunda 30 menit.*\n\n_(Timer tunda otomatis akan aktif pada Fase 3.)_',
+      '⏰ *Pengingat ditunda 30 menit.*\nBot akan mengirim pengingat ulang secara otomatis.',
     );
   });
 }

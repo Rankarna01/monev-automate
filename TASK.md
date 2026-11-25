@@ -68,13 +68,13 @@ Dokumen ini memecah [PLAN.md](file:///Users/calvin/KINRA/monev-automate/PLAN.md)
 
 **Target:** Pengingat harian berjalan otomatis sesuai jadwal WIB dan bisa diubah langsung dari Telegram.
 
-- [ ] Implementasikan `src/scheduler/cron.ts` menggunakan `node-cron` dengan timezone `Asia/Jakarta`
-- [ ] Muat konfigurasi jadwal (`schedule_time`, `schedule_days`, `timeout_hours`) dari tabel `settings` (fallback ke `.env`)
-- [ ] Implementasikan perintah `/jam <HH:MM>` dan `/hari <rentang/daftar>` untuk memperbarui jadwal secara dinamis tanpa restart bot
-- [ ] Pastikan hanya 1 notifikasi terkirim per hari (cegah duplikasi)
-- [ ] Implementasikan logika tombol `Ingatkan 30 menit` (tunda notifikasi)
-- [ ] Implementasikan pengecekan batas waktu (`APPROVAL_TIMEOUT_HOURS`) → transisi ke status `kedaluwarsa`
-- [ ] Tambahkan fallback pengingat jika bot sempat mati/offline saat jam jadwal dan baru hidup kembali di hari yang sama
+- [x] Implementasikan `src/scheduler/cron.ts` menggunakan `node-cron` dengan timezone `Asia/Jakarta`
+- [x] Muat konfigurasi jadwal (`schedule_time`, `schedule_days`, `timeout_hours`) dari tabel `settings` (fallback ke `.env`)
+- [x] Implementasikan perintah `/jam <HH:MM>` dan `/hari <rentang/daftar>` untuk memperbarui jadwal secara dinamis tanpa restart bot
+- [x] Pastikan hanya 1 notifikasi terkirim per hari (cegah duplikasi)
+- [x] Implementasikan logika tombol `Ingatkan 30 menit` (tunda notifikasi)
+- [x] Implementasikan pengecekan batas waktu (`APPROVAL_TIMEOUT_HOURS`) → transisi ke status `kedaluwarsa`
+- [x] Tambahkan fallback pengingat jika bot sempat mati/offline saat jam jadwal dan baru hidup kembali di hari yang sama
 
 **Kriteria Selesai:** Notifikasi muncul otomatis di jam yang diset, bisa diubah via chat, dan tidak terkirim ganda.
 

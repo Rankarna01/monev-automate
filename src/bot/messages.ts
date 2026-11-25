@@ -21,16 +21,19 @@ export function buildReminderKeyboard(): InlineKeyboard {
 /**
  * Pesan sambutan untuk perintah /start.
  */
-export function buildStartMessage(scheduleTime: string): string {
+export function buildStartMessage(scheduleTime: string, scheduleDaysLabel?: string): string {
+  const daysPart = scheduleDaysLabel ? ` (${scheduleDaysLabel})` : '';
   return [
     '👋 *Bot Laporan Harian Monev aktif!*',
     '',
-    `🕒 Jadwal pengingat harian: *${scheduleTime} WIB*`,
+    `🕒 Jadwal pengingat harian: *${scheduleTime} WIB*${daysPart}`,
     `📅 Waktu server saat ini: ${formatWibDateTime()}`,
     '',
     'Perintah yang tersedia:',
     '• `/start` — Cek status bot hidup',
     '• `/status` — Cek status laporan hari ini',
+    '• `/jam <HH:MM>` — Ubah jam pengingat harian',
+    '• `/hari <hari>` — Atur hari aktif (mis. `senin-jumat`)',
     '• `/riwayat` — Lihat 7 laporan terakhir',
     '• `/tes` — Uji coba kirim tombol pengingat harian',
   ].join('\n');
