@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCommitsPromptInput } from '../src/ai/prompt.js';
+import { buildCommitsPromptInput, SYSTEM_PROMPT } from '../src/ai/prompt.js';
 import { extractJsonString } from '../src/ai/summarize.js';
 import { parseDraftEditText, validateDraft } from '../src/utils/validate.js';
 
@@ -64,5 +64,6 @@ describe('validateDraft & parseDraftEditText', () => {
     ]);
     expect(prompt).toContain('Rankarna01/monev-automate');
     expect(prompt).toContain('src/ai/summarize.ts');
+    expect(SYSTEM_PROMPT).toContain('LARANGAN ISTILAH GIT');
   });
 });
