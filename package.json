@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@google/genai": "^3.6.1",
     "@octokit/rest": "^22.0.1",
     "dotenv": "^16.4.7",
     "grammy": "^1.35.0",
