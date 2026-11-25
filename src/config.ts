@@ -56,7 +56,7 @@ const envSchema = z.object({
     .trim()
     .regex(/^\d{2}:\d{2}$/, 'SCHEDULE_TIME harus berformat HH:MM (contoh: 14:00)')
     .optional()
-    .default('14:00'),
+    .default('16:00'),
   APPROVAL_TIMEOUT_HOURS: z.coerce.number().int().positive().optional().default(3),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])

@@ -23,6 +23,7 @@ export interface ScheduleState {
 
 export interface SchedulerService {
   start: () => Promise<void>;
+  loadOnly: () => Promise<void>;
   stop: () => void;
   reloadSchedule: (nextTime?: string, nextDays?: number[]) => Promise<ScheduleState>;
   getCurrentSchedule: () => ScheduleState;
@@ -239,6 +240,7 @@ export function createScheduler(
 
   return {
     start,
+    loadOnly: loadScheduleFromDb,
     stop,
     reloadSchedule,
     getCurrentSchedule: () => ({ time: currentTime, days: [...currentDays] }),

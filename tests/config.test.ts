@@ -12,7 +12,7 @@ describe('loadConfig', () => {
     expect(config.TELEGRAM_CHAT_ID).toBe(987654321);
     expect(config.GEMINI_MODEL).toBe('gemini-3.8-flash');
     expect(config.TZ).toBe('Asia/Jakarta');
-    expect(config.SCHEDULE_TIME).toBe('14:00');
+    expect(config.SCHEDULE_TIME).toBe('16:00');
     expect(config.DRY_RUN).toBe(false);
   });
 
