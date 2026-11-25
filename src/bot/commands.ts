@@ -1,4 +1,11 @@
 import type { Bot } from 'grammy';
+import {
+  clearGeminiApiKey,
+  getGeminiCredentials,
+  saveGeminiApiKey,
+  saveGeminiModel,
+  validateGeminiApiKey,
+} from '../ai/config.js';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo } from '../db/repo.js';
 import {
@@ -21,6 +28,7 @@ import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
 import { parseDraftEditText, validateDraft } from '../utils/validate.js';
 import {
+  handleGeminiStatusAction,
   handleGitHubStatusAction,
   handleRepoListAction,
   handleRiwayatAction,
@@ -255,6 +263,69 @@ export function registerCommands(
     }
 
     await handleRepoListAction(ctx, deps);
+  });
+
+  bot.command('gemini', async (ctx) => {
+    const raw = ctx.match.trim();
+    const [sub, ...rest] = raw.split(/\s+/);
+    const arg = rest.join(' ').trim();
+
+    if (!sub || sub === 'status') {
+      await handleGeminiStatusAction(ctx, deps);
+      return;
+    }
+
+    if (sub === 'key' || sub === 'set') {
+      if (!arg) {
+        await ctx.reply('Gunakan: `/gemini key <GEMINI_API_KEY>`', {
+          parse_mode: 'Markdown',
+        });
+        return;
+      }
+
+      const current = await getGeminiCredentials(config, repo);
+      const model = current?.model ?? config.GEMINI_MODEL;
+
+      try {
+        await ctx.reply('⏳ Memverifikasi Gemini API Key...');
+        await validateGeminiApiKey(arg, model);
+        await saveGeminiApiKey(repo, arg);
+        logger.info({ model }, 'GEMINI_API_KEY tersimpan via /gemini key');
+        await ctx.reply(
+          `✅ *Gemini API Key valid dan tersimpan!*\nModel aktif: \`${model}\``,
+          { parse_mode: 'Markdown' },
+        );
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        await ctx.reply(`❌ Gagal memverifikasi Gemini API Key: ${msg}`);
+      }
+      return;
+    }
+
+    if (sub === 'model') {
+      if (!arg) {
+        await ctx.reply('Gunakan: `/gemini model gemini-2.5-flash`', {
+          parse_mode: 'Markdown',
+        });
+        return;
+      }
+      await saveGeminiModel(repo, arg);
+      await ctx.reply(`✅ Model Gemini diubah menjadi \`${arg}\`.`, {
+        parse_mode: 'Markdown',
+      });
+      return;
+    }
+
+    if (sub === 'hapus') {
+      await clearGeminiApiKey(repo);
+      await ctx.reply('✅ API key Gemini dinamis di database telah dihapus.');
+      return;
+    }
+
+    await ctx.reply(
+      'Sub-perintah tidak dikenal. Gunakan `/gemini`, `/gemini key <API_KEY>`, `/gemini model <MODEL>`, atau `/gemini hapus`.',
+      { parse_mode: 'Markdown' },
+    );
   });
 
   bot.command('riwayat', async (ctx) => {

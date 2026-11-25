@@ -1,4 +1,5 @@
 import type { Context } from 'grammy';
+import { getGeminiCredentials } from '../ai/config.js';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo } from '../db/repo.js';
 import { formatStatusLabel } from '../db/stateMachine.js';
@@ -31,6 +32,7 @@ export async function handleStatusAction(ctx: Context, deps: BotActionDeps): Pro
   const schedule = deps.getScheduler().getCurrentSchedule();
   const creds = await getGitHubCredentials(deps.config, deps.repo);
   const whitelist = await getWhitelistedRepos(deps.config, deps.repo);
+  const gemini = await getGeminiCredentials(deps.config, deps.repo);
   const statusText = report
     ? formatStatusLabel(report.status)
     : 'Belum ada aktivitas hari ini';
@@ -42,7 +44,7 @@ export async function handleStatusAction(ctx: Context, deps: BotActionDeps): Pro
     `• Jadwal: *${schedule.time} WIB* (${formatScheduleDays(schedule.days)})`,
     `• GitHub: ${creds ? `✅ Terhubung (\`${creds.username || 'token aktif'}\`)` : '❌ Belum terhubung (`/github`)'}`,
     `• Repo whitelist: *${whitelist.length} repo*`,
-    `• Gemini AI: ${deps.config.GEMINI_API_KEY ? `✅ Siap (\`${deps.config.GEMINI_MODEL}\`)` : '❌ `GEMINI_API_KEY` belum diisi'}`,
+    `• Gemini AI: ${gemini ? `✅ Siap (\`${gemini.model}\`)` : '❌ Belum diatur (`/gemini`)'}`,
     `• Mode Dry Run Monev: \`${deps.config.DRY_RUN ? 'aktif' : 'nonaktif'}\``,
   ];
 
@@ -183,4 +185,39 @@ export async function handleRepoListAction(ctx: Context, deps: BotActionDeps): P
     const msg = error instanceof Error ? error.message : String(error);
     await ctx.reply(`❌ Gagal mengambil daftar repo GitHub: ${msg}`);
   }
+}
+
+/**
+ * Menampilkan status konfigurasi Gemini AI dan cara mengaturnya.
+ */
+export async function handleGeminiStatusAction(ctx: Context, deps: BotActionDeps): Promise<void> {
+  const gemini = await getGeminiCredentials(deps.config, deps.repo);
+
+  if (gemini) {
+    await ctx.reply(
+      [
+        '🧠 *Status Gemini AI*',
+        '• Status: ✅ *Siap digunakan*',
+        `• Model aktif: \`${gemini.model}\``,
+        '',
+        'Perintah pengaturan:',
+        '• `/gemini key <API_KEY>` — Ganti API key',
+        '• `/gemini model <NAMA_MODEL>` — Ganti model (mis. `gemini-2.5-flash`)',
+        '• `/gemini hapus` — Hapus API key dinamis dari database',
+      ].join('\n'),
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
+
+  await ctx.reply(
+    [
+      '🧠 *Gemini API Key belum diatur*',
+      '',
+      'Cara mengatur langsung dari Telegram:',
+      '1. Buat API key di Google AI Studio (`aistudio.google.com/apikey`)',
+      '2. Kirim `/gemini key <API_KEY_KAMU>` ke bot ini',
+    ].join('\n'),
+    { parse_mode: 'Markdown' },
+  );
 }

@@ -1,4 +1,5 @@
 import type { Bot, Context } from 'grammy';
+import { getGeminiCredentials } from '../ai/config.js';
 import { summarizeCommitsWithGemini } from '../ai/summarize.js';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo } from '../db/repo.js';
@@ -13,6 +14,7 @@ import { formatScheduleDays } from '../scheduler/scheduleParser.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
 import {
+  handleGeminiStatusAction,
   handleGitHubStatusAction,
   handleRepoListAction,
   handleRiwayatAction,
@@ -73,6 +75,11 @@ export function registerCallbacks(
     await handleRepoListAction(ctx, deps);
   });
 
+  bot.callbackQuery(MENU_ACTIONS.GEMINI, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await handleGeminiStatusAction(ctx, deps);
+  });
+
   bot.callbackQuery(MENU_ACTIONS.RIWAYAT, async (ctx) => {
     await ctx.answerCallbackQuery();
     await handleRiwayatAction(ctx, deps);
@@ -118,9 +125,10 @@ export function registerCallbacks(
       return;
     }
 
-    if (!config.GEMINI_API_KEY) {
+    const gemini = await getGeminiCredentials(config, repo);
+    if (!gemini) {
       await ctx.answerCallbackQuery({
-        text: 'GEMINI_API_KEY belum diisi di .env.',
+        text: 'Gemini API Key belum diatur. Kirim /gemini dulu.',
         show_alert: true,
       });
       return;
@@ -155,8 +163,8 @@ export function registerCallbacks(
       await repo.saveCommits(today, commitsJson);
 
       const draft = await summarizeCommitsWithGemini({
-        apiKey: config.GEMINI_API_KEY,
-        model: config.GEMINI_MODEL,
+        apiKey: gemini.apiKey,
+        model: gemini.model,
         date: today,
         commits: result.commits,
       });
@@ -271,9 +279,10 @@ export function registerCallbacks(
     const today = getTodayWibDate();
     logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Buat Ulang draf diklik');
 
-    if (!config.GEMINI_API_KEY) {
+    const gemini = await getGeminiCredentials(config, repo);
+    if (!gemini) {
       await ctx.answerCallbackQuery({
-        text: 'GEMINI_API_KEY belum diisi di .env.',
+        text: 'Gemini API Key belum diatur. Kirim /gemini dulu.',
         show_alert: true,
       });
       return;
@@ -295,8 +304,8 @@ export function registerCallbacks(
       await disableInlineButtons(ctx, '🔄 *Membuat ulang draf dengan Gemini...*');
 
       const draft = await summarizeCommitsWithGemini({
-        apiKey: config.GEMINI_API_KEY,
-        model: config.GEMINI_MODEL,
+        apiKey: gemini.apiKey,
+        model: gemini.model,
         date: today,
         commits,
       });

@@ -7,8 +7,8 @@ Dokumen ini memecah [PLAN.md](file:///Users/calvin/KINRA/monev-automate/PLAN.md)
 ## Ringkasan Arsitektur & Tech Stack Awal
 
 - **Alur Utama:** `Scheduler (node-cron)` → `Notifikasi Telegram (grammY)` → `Tarik Commit (Octokit)` → `Ringkasan & Validasi ≥100 karakter (Google Gen AI SDK + zod)` → `Review & Persetujuan User di Telegram` → `Isi & Submit Form Monev (Playwright persistent context)` → `Bukti Screenshot ke Telegram`
-- **Penyimpanan & State:** `MySQL` (`mysql2`) untuk state machine harian (`menunggu_trigger` → `mengambil_data` → `draf_siap` / `menunggu_edit` → `mengirim` → `terkirim` / `gagal` / `dilewati` / `kedaluwarsa`), draf, dan pengaturan.
-- **Tech Stack Inti:** Node.js 20+ (TypeScript), `grammY` (long polling), `node-cron` (`Asia/Jakarta`), `@octokit/rest`, `@google/genai`, `playwright`, `mysql2`, `zod`, `pino`, `dotenv`, `vitest`, `pm2`.
+- **Penyimpanan & State:** `Supabase (PostgreSQL)` (`@supabase/supabase-js`) untuk state machine harian (`menunggu_trigger` → `mengambil_data` → `draf_siap` / `menunggu_edit` → `mengirim` → `terkirim` / `gagal` / `dilewati` / `kedaluwarsa`), draf, dan pengaturan.
+- **Tech Stack Inti:** Node.js 20+ (TypeScript), `grammY` (long polling), `node-cron` (`Asia/Jakarta`), `@octokit/rest`, `@google/genai`, `playwright`, `@supabase/supabase-js`, `zod`, `pino`, `dotenv`, `vitest`, `pm2`.
 - **Urutan Pengerjaan Disarankan:** `Fase 0 → Fase 1 → Fase 2 → Fase 3 → Fase 4 → Fase 5 → Fase 6 (DRY_RUN=true) → Fase 7`.
 
 ---
@@ -50,15 +50,15 @@ Dokumen ini memecah [PLAN.md](file:///Users/calvin/KINRA/monev-automate/PLAN.md)
 
 ---
 
-## Fase 2 · Database & State Machine (MySQL)
+## Fase 2 · Database & State Machine (Supabase)
 
-**Target:** State laporan harian tersimpan persisten di MySQL dengan transisi status yang aman.
+**Target:** State laporan harian tersimpan persisten di Supabase (PostgreSQL) dengan transisi status yang aman.
 
-- [x] Implementasikan koneksi MySQL (`mysql2/promise`) & migrasi otomatis tabel `settings` dan `reports` di `src/db/db.ts`
+- [x] Implementasikan koneksi Supabase (`@supabase/supabase-js`) & skema tabel `settings` dan `reports` di `supabase/schema.sql` serta `src/db/db.ts`
 - [x] Implementasikan aturan validasi transisi state machine di `src/db/stateMachine.ts` (`menunggu_trigger`, `mengambil_data`, `draf_siap`, `menunggu_edit`, `mengirim`, `terkirim`, `gagal`, `dilewati`, `kedaluwarsa`) agar tidak bisa melompat (mis. `terkirim` tidak bisa kembali ke `draf_siap`)
 - [x] Implementasikan query repository di `src/db/repo.ts`: `getTodayReport`, `createTodayReport`, `updateStatus`, `saveDraft`, `getSetting`, `setSetting`, `getRecentReports`
 - [x] Implementasikan mekanisme pemulihan state saat bot restart (termasuk membaca `telegram_message_id` terakhir)
-- [x] Hubungkan perintah `/status` dan `/riwayat` (7 laporan terakhir) ke database MySQL
+- [x] Hubungkan perintah `/status` dan `/riwayat` (7 laporan terakhir) ke database Supabase
 
 **Kriteria Selesai:** Restart bot di tengah alur tidak menghilangkan status maupun draf laporan hari itu.
 

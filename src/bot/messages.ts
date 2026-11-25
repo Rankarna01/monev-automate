@@ -20,6 +20,7 @@ export const MENU_ACTIONS = {
   TES: 'menu:tes',
   GITHUB: 'menu:github',
   REPO: 'menu:repo',
+  GEMINI: 'menu:gemini',
   RIWAYAT: 'menu:riwayat',
   SCHEDULE: 'menu:schedule',
 } as const;
@@ -46,7 +47,9 @@ export function buildGreetingMenuKeyboard(): InlineKeyboard {
     .text('🐙 Akun GitHub', MENU_ACTIONS.GITHUB)
     .text('📚 Pilih Repo', MENU_ACTIONS.REPO)
     .row()
+    .text('🧠 Gemini AI', MENU_ACTIONS.GEMINI)
     .text('🗂️ Riwayat Laporan', MENU_ACTIONS.RIWAYAT)
+    .row()
     .text('🕒 Info Jadwal', MENU_ACTIONS.SCHEDULE);
 }
 
@@ -80,6 +83,7 @@ export function buildStartMessage(scheduleTime: string, scheduleDaysLabel?: stri
     '• `/hari <hari>` — Atur hari aktif (mis. `senin-jumat`)',
     '• `/github` — Hubungkan / cek akun GitHub',
     '• `/repo` — Pilih repo whitelist lewat tombol',
+    '• `/gemini` — Atur API Key & model Gemini',
     '• `/riwayat` — Lihat 7 laporan terakhir',
     '• `/tes` — Uji coba kirim tombol pengingat harian',
     '',

@@ -97,7 +97,7 @@ Aturan ini bagian dari desain, bukan opsional.
 | GitHub | **Octokit** (`@octokit/rest`) + fine-grained PAT (read-only) | Ambil commit |
 | AI | **Google Gen AI SDK** (`@google/genai`) | Membuat 3 ringkasan |
 | Otomasi browser | **Playwright** (`launchPersistentContext`) | Isi form & submit di Monev |
-| Penyimpanan | **MySQL** (`mysql2`) | Status, draf, riwayat, pengaturan |
+| Penyimpanan | **Supabase** (`@supabase/supabase-js`) | Status, draf, riwayat, pengaturan |
 | Validasi | **zod** | Validasi env, output AI, input |
 | Logging | **pino** | Log terstruktur |
 | Konfigurasi | **dotenv** | Menyimpan token di `.env` |
