@@ -82,17 +82,21 @@ export async function handleTesAction(ctx: Context, deps: BotActionDeps): Promis
   const today = getTodayWibDate();
   const existing = await deps.repo.getTodayReport(today);
 
-  if (
-    existing &&
-    (existing.status === 'terkirim' ||
-      existing.status === 'dilewati' ||
-      existing.status === 'kedaluwarsa')
-  ) {
+  if (existing?.status === 'terkirim') {
     await ctx.reply(
       `ℹ️ Laporan tanggal \`${today}\` sudah berstatus *${formatStatusLabel(existing.status)}*.`,
       { parse_mode: 'Markdown' },
     );
     return;
+  }
+
+  if (
+    existing &&
+    (existing.status === 'dilewati' ||
+      existing.status === 'gagal' ||
+      existing.status === 'kedaluwarsa')
+  ) {
+    await deps.repo.resetNonSubmittedReport(today);
   }
 
   const sent = await ctx.reply(buildReminderMessage(today), {

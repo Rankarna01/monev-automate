@@ -40,6 +40,7 @@ export interface ReportRepo {
   ) => Promise<ReportRecord>;
   saveDraft: (date: string, draft: DraftInput) => Promise<ReportRecord>;
   saveCommits: (date: string, commitsJson: string) => Promise<ReportRecord>;
+  resetNonSubmittedReport: (date: string) => Promise<ReportRecord | null>;
   getRecentReports: (limit?: number) => Promise<ReportRecord[]>;
   getSetting: (key: string) => Promise<string | null>;
   setSetting: (key: string, value: string) => Promise<void>;
@@ -201,6 +202,31 @@ export function createReportRepo(client: SupabaseClient): ReportRepo {
     return data as ReportRecord;
   }
 
+  async function resetNonSubmittedReport(date: string): Promise<ReportRecord | null> {
+    const current = await getTodayReport(date);
+    if (!current) return null;
+    if (current.status === 'terkirim') {
+      throw new Error(`Laporan tanggal ${date} sudah terkirim dan tidak dapat direset.`);
+    }
+
+    const { data, error } = await client
+      .from('reports')
+      .update({
+        status: 'menunggu_trigger',
+        error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('date', date)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw new Error(`Gagal mereset laporan ${date}: ${error.message}`);
+    }
+
+    return data as ReportRecord;
+  }
+
   async function getRecentReports(limit: number = 7): Promise<ReportRecord[]> {
     const { data, error } = await client
       .from('reports')
@@ -250,6 +276,7 @@ export function createReportRepo(client: SupabaseClient): ReportRepo {
     updateStatus,
     saveDraft,
     saveCommits,
+    resetNonSubmittedReport,
     getRecentReports,
     getSetting,
     setSetting,
