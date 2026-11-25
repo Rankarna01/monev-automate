@@ -21,6 +21,7 @@ const envSchema = z.object({
   // GitHub (Fase 4)
   GITHUB_TOKEN: z.string().trim().optional().default(''),
   GITHUB_USERNAME: z.string().trim().optional().default(''),
+  GITHUB_CLIENT_ID: z.string().trim().optional().default(''),
   GITHUB_REPOS: z
     .string()
     .trim()
