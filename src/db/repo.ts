@@ -46,6 +46,7 @@ export interface ReportRepo {
     },
   ) => Promise<ReportRecord>;
   saveDraft: (date: string, draft: DraftInput) => Promise<ReportRecord>;
+  saveCommits: (date: string, commitsJson: string) => Promise<ReportRecord>;
   getRecentReports: (limit?: number) => Promise<ReportRecord[]>;
   getSetting: (key: string) => Promise<string | null>;
   setSetting: (key: string, value: string) => Promise<void>;
@@ -151,6 +152,14 @@ export function createReportRepo(pool: Pool): ReportRepo {
     return (await getTodayReport(date))!;
   }
 
+  async function saveCommits(date: string, commitsJson: string): Promise<ReportRecord> {
+    await pool.query(
+      'UPDATE reports SET commits_json = ? WHERE date = ?',
+      [commitsJson, date],
+    );
+    return (await getTodayReport(date))!;
+  }
+
   async function getRecentReports(limit: number = 7): Promise<ReportRecord[]> {
     const [rows] = await pool.query<ReportRow[]>(
       'SELECT * FROM reports ORDER BY date DESC LIMIT ?',
@@ -181,6 +190,7 @@ export function createReportRepo(pool: Pool): ReportRepo {
     createOrGetTodayReport,
     updateStatus,
     saveDraft,
+    saveCommits,
     getRecentReports,
     getSetting,
     setSetting,
