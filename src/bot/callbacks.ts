@@ -42,13 +42,31 @@ import {
 import { buildRepoSelectionKeyboard, getCachedRepos } from './repoKeyboard.js';
 
 /**
+ * Menjawab callback query dengan aman (tidak menggagalkan proses jika query kedaluwarsa >10 detik).
+ */
+async function safeAnswerCallback(
+  ctx: Context,
+  options?: Parameters<Context['answerCallbackQuery']>[0],
+): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery(options);
+  } catch {
+    // Abaikan jika callback query sudah terlalu lama (query is too old)
+  }
+}
+
+/**
  * Menonaktifkan tombol inline pada pesan yang sudah diproses agar tidak diklik ganda.
  */
 async function disableInlineButtons(ctx: Context, updatedText: string): Promise<void> {
-  await ctx.editMessageText(updatedText, {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: [] },
-  });
+  try {
+    await ctx.editMessageText(updatedText, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [] },
+    });
+  } catch {
+    // Abaikan jika pesan sudah teredit sebelumnya
+  }
 }
 
 /**
@@ -199,6 +217,10 @@ export function registerCallbacks(
   });
 
   bot.callbackQuery(CALLBACK_ACTIONS.SUMMARIZE, async (ctx) => {
+    await safeAnswerCallback(ctx, {
+      text: 'Menarik commit & membuat ringkasan Gemini...',
+    });
+
     const user = await resolveCurrentUser(ctx, repo);
     if (!user) return;
 
@@ -207,27 +229,27 @@ export function registerCallbacks(
 
     const creds = getUserGitHubCredentials(config, user);
     if (!creds) {
-      await ctx.answerCallbackQuery({
-        text: 'GitHub belum ditautkan. Kirim /github atau pilih Catatan AI.',
-        show_alert: true,
+      await ctx.reply('❌ GitHub belum ditautkan. Kirim `/github` atau pilih *✍️ Catatan Teks*.', {
+        parse_mode: 'Markdown',
       });
       return;
     }
 
     if (user.whitelisted_repos.length === 0) {
-      await ctx.answerCallbackQuery({
-        text: 'Belum ada repo whitelist. Pilih lewat /repo dulu.',
-        show_alert: true,
+      await ctx.reply('❌ Belum ada repo whitelist. Pilih lewat `/repo` dulu.', {
+        parse_mode: 'Markdown',
       });
       return;
     }
 
     const gemini = await getGeminiCredentials(config, repo);
     if (!gemini) {
-      await ctx.answerCallbackQuery({
-        text: 'Layanan Gemini AI global belum diatur admin.',
-        show_alert: true,
-      });
+      await ctx.reply('❌ Layanan Gemini AI global belum diatur admin.');
+      return;
+    }
+
+    const existing = await repo.getTodayReport(user.id, today);
+    if (existing?.status === 'mengambil_data') {
       return;
     }
 
@@ -246,9 +268,6 @@ export function registerCallbacks(
       );
       await repo.updateStatus(user.id, today, 'mengambil_data', {
         sourceMode: 'github',
-      });
-      await ctx.answerCallbackQuery({
-        text: 'Menarik commit & membuat ringkasan Gemini...',
       });
       await disableInlineButtons(
         ctx,
