@@ -10,11 +10,12 @@ import {
 } from './prompt.js';
 
 const MAX_VALIDATION_RETRIES = 2;
+const PER_MODEL_TIMEOUT_MS = 12_000;
 const FALLBACK_MODELS = [
+  'gemini-3.5-flash-lite',
   'gemini-3.8-flash',
   'gemini-3.7-flash',
   'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
 ];
 
 export interface SummarizeOptions {
@@ -59,7 +60,8 @@ function isTransientOrUnavailableError(error: unknown): boolean {
     msg.includes('UNAVAILABLE') ||
     msg.includes('RESOURCE_EXHAUSTED') ||
     msg.includes('404') ||
-    msg.includes('NOT_FOUND')
+    msg.includes('NOT_FOUND') ||
+    msg.includes('MODEL_TIMEOUT')
   );
 }
 
@@ -74,30 +76,37 @@ async function generateWithFallback(
   for (let i = 0; i < modelsToTry.length; i++) {
     const model = modelsToTry[i];
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              aktivitas: { type: Type.STRING },
-              pembelajaran: { type: Type.STRING },
-              kendala: { type: Type.STRING },
+      const response = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                aktivitas: { type: Type.STRING },
+                pembelajaran: { type: Type.STRING },
+                kendala: { type: Type.STRING },
+              },
+              required: ['aktivitas', 'pembelajaran', 'kendala'],
             },
-            required: ['aktivitas', 'pembelajaran', 'kendala'],
           },
-        },
-      });
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`MODEL_TIMEOUT: ${model} melebihi ${PER_MODEL_TIMEOUT_MS}ms`)),
+            PER_MODEL_TIMEOUT_MS,
+          ),
+        ),
+      ]);
       return response.text ?? '';
     } catch (error) {
       lastError = error;
       if (!isTransientOrUnavailableError(error) || i === modelsToTry.length - 1) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)));
     }
   }
 

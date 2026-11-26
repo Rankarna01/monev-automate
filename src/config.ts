@@ -38,7 +38,7 @@ const envSchema = z.object({
 
   // Gemini Global (Fase 5 & Multi-User)
   GEMINI_API_KEY: z.string().trim().optional().default(''),
-  GEMINI_MODEL: z.string().trim().optional().default('gemini-3.8-flash'),
+  GEMINI_MODEL: z.string().trim().optional().default('gemini-3.5-flash-lite'),
   AI_DAILY_LIMIT: z.coerce.number().int().positive().optional().default(5),
 
   // Keamanan Enkripsi Token Multi-User

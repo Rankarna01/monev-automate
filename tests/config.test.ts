@@ -10,7 +10,7 @@ describe('loadConfig', () => {
 
     expect(config.TELEGRAM_BOT_TOKEN).toBe('123456:ABC-DEF');
     expect(config.TELEGRAM_CHAT_ID).toBe(987654321);
-    expect(config.GEMINI_MODEL).toBe('gemini-3.8-flash');
+    expect(config.GEMINI_MODEL).toBe('gemini-3.5-flash-lite');
     expect(config.TZ).toBe('Asia/Jakarta');
     expect(config.SCHEDULE_TIME).toBe('16:00');
     expect(config.DRY_RUN).toBe(false);
