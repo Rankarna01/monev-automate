@@ -28,6 +28,8 @@ export default async function handler(
   scheduler = createScheduler(bot, config, logger, repo);
   await scheduler.loadOnly?.();
 
-  const handleUpdate = webhookCallback(bot, 'http');
+  const handleUpdate = webhookCallback(bot, 'http', {
+    timeoutMilliseconds: 55_000,
+  });
   await handleUpdate(req, res);
 }
