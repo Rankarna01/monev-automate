@@ -134,7 +134,7 @@ export function buildTutorialMessage(user: UserRecord): string {
     '',
     '1️⃣ *Simpan / Tautkan Akun GitHub (Opsional)*',
     '• Tidak wajib jika kamu ingin pakai Mode Catatan AI saja.',
-    '• Jika ingin otomatis tarik commit: buat Fine-grained PAT (Read-only `Contents` & `Metadata`) di GitHub → kirim `/github token <PAT>` (atau `/github login` jika OAuth aktif).',
+    '• Jika ingin otomatis tarik commit: buat Fine-grained PAT (Read-only `Contents` & `Metadata`) di https://github.com/settings/personal-access-tokens/new → kirim `/github token <PAT>` (atau `/github login` jika OAuth aktif).',
     '• Setelah terhubung, klik *📚 Pilih Repo* untuk memilih repo lewat tombol.',
     '',
     '2️⃣ *Buat Laporan Tanpa GitHub (Mode Catatan AI)*',
