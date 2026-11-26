@@ -31,7 +31,7 @@ export interface ParsedTime {
  */
 export function parseScheduleTime(input: string): ParsedTime {
   const trimmed = input.trim();
-  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+  const match = /^(\d{1,2})[:.](\d{2})$/.exec(trimmed);
   if (!match) {
     throw new Error('Format jam tidak valid. Gunakan format HH:MM, contoh: 14:00');
   }

@@ -26,6 +26,7 @@ import {
   buildDraftKeyboard,
   buildDraftMessage,
   buildEditInstructionMessage,
+  buildScheduleKeyboard,
   CALLBACK_ACTIONS,
   DRAFT_ACTIONS,
   MENU_ACTIONS,
@@ -94,12 +95,39 @@ export function registerCallbacks(
         `• Jam: *${schedule.time} WIB*`,
         `• Hari aktif: *${formatScheduleDays(schedule.days)}*`,
         '',
-        'Ubah via perintah:',
-        '• `/jam 14:30`',
-        '• `/hari senin-jumat`',
+        'Pilih jam notifikasi langsung (14:00–17:00 WIB) di bawah ini, atau ubah hari dengan `/hari senin-jumat`:',
       ].join('\n'),
-      { parse_mode: 'Markdown' },
+      {
+        parse_mode: 'Markdown',
+        reply_markup: buildScheduleKeyboard(schedule.time),
+      },
     );
+  });
+
+  bot.callbackQuery(/^set_jam:(\d{2}:\d{2})$/, async (ctx) => {
+    const chosenTime = ctx.match[1];
+    try {
+      const updated = await getScheduler().reloadSchedule(chosenTime, undefined);
+      await ctx.answerCallbackQuery({
+        text: `✅ Jam notifikasi diubah ke ${updated.time} WIB`,
+      });
+      await ctx.editMessageText(
+        [
+          '🕒 *Pengaturan Jadwal Saat Ini*',
+          `• Jam: *${updated.time} WIB*`,
+          `• Hari aktif: *${formatScheduleDays(updated.days)}*`,
+          '',
+          'Pilih jam notifikasi langsung (14:00–17:00 WIB) di bawah ini, atau ubah hari dengan `/hari senin-jumat`:',
+        ].join('\n'),
+        {
+          parse_mode: 'Markdown',
+          reply_markup: buildScheduleKeyboard(updated.time),
+        },
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      await ctx.answerCallbackQuery({ text: `❌ ${msg}`, show_alert: true });
+    }
   });
 
   // === Alur Pengingat Harian ===

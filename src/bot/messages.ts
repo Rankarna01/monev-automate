@@ -50,7 +50,32 @@ export function buildGreetingMenuKeyboard(): InlineKeyboard {
     .text('🧠 Gemini AI', MENU_ACTIONS.GEMINI)
     .text('🗂️ Riwayat Laporan', MENU_ACTIONS.RIWAYAT)
     .row()
-    .text('🕒 Info Jadwal', MENU_ACTIONS.SCHEDULE);
+    .text('🕒 Ubah Jam & Jadwal', MENU_ACTIONS.SCHEDULE);
+}
+
+const SCHEDULE_TIME_OPTIONS = [
+  '14:00',
+  '14:30',
+  '15:00',
+  '15:30',
+  '16:00',
+  '16:30',
+  '17:00',
+] as const;
+
+/**
+ * Membuat inline keyboard pilihan jam notifikasi langsung dari 14:00 sampai 17:00 WIB.
+ */
+export function buildScheduleKeyboard(activeTime: string): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  SCHEDULE_TIME_OPTIONS.forEach((time, index) => {
+    const label = time === activeTime ? `✅ ${time}` : `🕒 ${time}`;
+    keyboard.text(label, `set_jam:${time}`);
+    if ((index + 1) % 3 === 0 && index < SCHEDULE_TIME_OPTIONS.length - 1) {
+      keyboard.row();
+    }
+  });
+  return keyboard;
 }
 
 /**
