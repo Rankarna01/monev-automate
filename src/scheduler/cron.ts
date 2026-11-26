@@ -2,38 +2,21 @@ import type { Bot } from 'grammy';
 import cron, { type ScheduledTask } from 'node-cron';
 import { buildReminderKeyboard, buildReminderMessage } from '../bot/messages.js';
 import type { AppConfig } from '../config.js';
-import type { ReportRepo } from '../db/repo.js';
+import type { ReportRepo, UserRecord } from '../db/repo.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
-import {
-  buildCronExpression,
-  isScheduledTimePassedToday,
-  parseScheduleDays,
-  parseScheduleTime,
-} from './scheduleParser.js';
-
-const SETTING_SCHEDULE_TIME = 'schedule_time';
-const SETTING_SCHEDULE_DAYS = 'schedule_days';
-const DEFAULT_DAYS = [1, 2, 3, 4, 5]; // Senin-Jumat
-
-export interface ScheduleState {
-  time: string;
-  days: number[];
-}
+import { buildCronExpression, parseScheduleTime } from './scheduleParser.js';
 
 export interface SchedulerService {
   start: () => Promise<void>;
   loadOnly: () => Promise<void>;
   stop: () => void;
-  reloadSchedule: (nextTime?: string, nextDays?: number[]) => Promise<ScheduleState>;
-  getCurrentSchedule: () => ScheduleState;
-  scheduleSnooze: (minutes?: number) => void;
-  triggerDailyReminder: (source: 'cron' | 'recovery' | 'snooze') => Promise<void>;
+  scheduleSnooze: (minutes?: number, chatId?: number) => void;
+  triggerDailyReminder: (source: 'cron' | 'snooze', targetChatId?: number) => Promise<number>;
 }
 
 /**
- * Membuat layanan scheduler harian berbasis node-cron (zona Asia/Jakarta),
- * lengkap dengan tunda 30 menit, cek kedaluwarsa, dan pemulihan saat bot baru hidup.
+ * Membuat layanan scheduler multi-user berbasis node-cron (zona Asia/Jakarta).
  */
 export function createScheduler(
   bot: Bot,
@@ -41,43 +24,96 @@ export function createScheduler(
   logger: Logger,
   repo: ReportRepo,
 ): SchedulerService {
-  let currentTime = config.SCHEDULE_TIME;
-  let currentDays = [...DEFAULT_DAYS];
   let dailyTask: ScheduledTask | null = null;
-  let expiryTask: ScheduledTask | null = null;
-  let snoozeTimer: NodeJS.Timeout | null = null;
+  const snoozeTimers = new Map<number, NodeJS.Timeout>();
 
-  async function loadScheduleFromDb(): Promise<void> {
-    const savedTime = await repo.getSetting(SETTING_SCHEDULE_TIME);
-    if (savedTime) {
-      try {
-        currentTime = parseScheduleTime(savedTime).formatted;
-      } catch {
-        logger.warn({ savedTime }, 'schedule_time di DB tidak valid, memakai default');
-      }
+  async function sendReminderToUser(
+    user: UserRecord,
+    today: string,
+    source: 'cron' | 'snooze',
+  ): Promise<boolean> {
+    const existing = await repo.getTodayReport(user.id, today);
+
+    if (source === 'cron' && existing) {
+      return false;
+    }
+    if (source === 'snooze' && existing && existing.status !== 'menunggu_trigger') {
+      return false;
     }
 
-    const savedDays = await repo.getSetting(SETTING_SCHEDULE_DAYS);
-    if (savedDays) {
-      try {
-        const parsed = JSON.parse(savedDays) as unknown;
-        if (Array.isArray(parsed) && parsed.every((n) => typeof n === 'number')) {
-          currentDays = parsed;
-        }
-      } catch {
-        currentDays = parseScheduleDays(savedDays);
-      }
-    }
+    const prefix = source === 'snooze' ? '⏰ *(Pengingat ulang 30 menit)*\n\n' : '';
+    const sent = await bot.api.sendMessage(
+      user.telegram_chat_id,
+      `${prefix}${buildReminderMessage(today)}`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: buildReminderKeyboard(),
+      },
+    );
+
+    await repo.createOrGetTodayReport(user.id, today, sent.message_id);
+    return true;
   }
 
-  function registerDailyCron(): void {
-    if (dailyTask) {
-      dailyTask.stop();
-      dailyTask = null;
+  async function triggerDailyReminder(
+    source: 'cron' | 'snooze',
+    targetChatId?: number,
+  ): Promise<number> {
+    const today = getTodayWibDate();
+    const wibDate = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }),
+    );
+    const todayDow = wibDate.getDay();
+
+    if (targetChatId !== undefined) {
+      const user = await repo.getUserByChatId(targetChatId);
+      if (!user) return 0;
+      const sent = await sendReminderToUser(user, today, source);
+      return sent ? 1 : 0;
     }
 
-    const { hour, minute } = parseScheduleTime(currentTime);
-    const expr = buildCronExpression(hour, minute, currentDays);
+    const users = await repo.getAllUsers();
+    let sentCount = 0;
+
+    for (const user of users) {
+      if (!user.schedule_days.includes(todayDow)) {
+        continue;
+      }
+      try {
+        const sent = await sendReminderToUser(user, today, source);
+        if (sent) sentCount++;
+      } catch (error) {
+        logger.warn(
+          { err: error instanceof Error ? error.message : String(error), userId: user.id },
+          'Gagal mengirim pengingat harian ke user',
+        );
+      }
+    }
+
+    logger.info({ today, sentCount }, 'Pengingat harian multi-user selesai dikirim');
+    return sentCount;
+  }
+
+  function scheduleSnooze(
+    minutes: number = 30,
+    chatId: number = config.TELEGRAM_CHAT_ID,
+  ): void {
+    const existing = snoozeTimers.get(chatId);
+    if (existing) {
+      clearTimeout(existing);
+    }
+
+    const timer = setTimeout(() => {
+      snoozeTimers.delete(chatId);
+      void triggerDailyReminder('snooze', chatId);
+    }, minutes * 60 * 1000);
+
+    snoozeTimers.set(chatId, timer);
+  }
+
+  async function start(): Promise<void> {
+    const { hour, minute } = parseScheduleTime(config.SCHEDULE_TIME);
+    const expr = buildCronExpression(hour, minute, [0, 1, 2, 3, 4, 5, 6]);
 
     dailyTask = cron.schedule(
       expr,
@@ -87,140 +123,7 @@ export function createScheduler(
       { timezone: 'Asia/Jakarta' },
     );
 
-    logger.info(
-      { cron: expr, time: currentTime, days: currentDays, timezone: 'Asia/Jakarta' },
-      'Jadwal cron harian aktif',
-    );
-  }
-
-  async function checkApprovalTimeout(): Promise<void> {
-    const today = getTodayWibDate();
-    const report = await repo.getTodayReport(today);
-    if (!report) return;
-
-    const expirableStatuses = new Set([
-      'menunggu_trigger',
-      'draf_siap',
-      'menunggu_edit',
-    ]);
-    if (!expirableStatuses.has(report.status)) return;
-
-    const timeoutMs = config.APPROVAL_TIMEOUT_HOURS * 60 * 60 * 1000;
-    const elapsedMs = Date.now() - new Date(report.created_at).getTime();
-
-    if (elapsedMs < timeoutMs) return;
-
-    await repo.updateStatus(today, 'kedaluwarsa');
-    logger.info({ today, previousStatus: report.status }, 'Laporan hari ini kedaluwarsa');
-
-    if (report.telegram_message_id) {
-      try {
-        await bot.api.editMessageReplyMarkup(
-          config.TELEGRAM_CHAT_ID,
-          report.telegram_message_id,
-          { reply_markup: { inline_keyboard: [] } },
-        );
-      } catch {
-        // Abaikan jika pesan lama sudah tidak bisa diedit
-      }
-    }
-
-    await bot.api.sendMessage(
-      config.TELEGRAM_CHAT_ID,
-      `⌛ *Laporan tanggal \`${today}\` kedaluwarsa* karena melewati batas waktu ${config.APPROVAL_TIMEOUT_HOURS} jam tanpa persetujuan.`,
-      { parse_mode: 'Markdown' },
-    );
-  }
-
-  async function triggerDailyReminder(
-    source: 'cron' | 'recovery' | 'snooze',
-  ): Promise<void> {
-    const today = getTodayWibDate();
-    const existing = await repo.getTodayReport(today);
-
-    if (source === 'cron' || source === 'recovery') {
-      if (existing) {
-        logger.debug({ today, source, status: existing.status }, 'Notifikasi harian dilewati (sudah ada record hari ini)');
-        return;
-      }
-    } else if (source === 'snooze') {
-      if (existing && existing.status !== 'menunggu_trigger') {
-        logger.debug({ today, status: existing.status }, 'Pengingat tunda dibatalkan karena status sudah berubah');
-        return;
-      }
-    }
-
-    const prefix =
-      source === 'recovery'
-        ? '🔔 *(Pengingat tertunda karena bot sempat offline)*\n\n'
-        : source === 'snooze'
-          ? '⏰ *(Pengingat ulang 30 menit)*\n\n'
-          : '';
-
-    const sent = await bot.api.sendMessage(
-      config.TELEGRAM_CHAT_ID,
-      `${prefix}${buildReminderMessage(today)}`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: buildReminderKeyboard(),
-      },
-    );
-
-    await repo.createOrGetTodayReport(today, sent.message_id);
-    logger.info({ today, source, messageId: sent.message_id }, 'Notifikasi pengingat harian terkirim');
-  }
-
-  function scheduleSnooze(minutes: number = 30): void {
-    if (snoozeTimer) {
-      clearTimeout(snoozeTimer);
-      snoozeTimer = null;
-    }
-
-    const delayMs = minutes * 60 * 1000;
-    snoozeTimer = setTimeout(() => {
-      snoozeTimer = null;
-      void triggerDailyReminder('snooze');
-    }, delayMs);
-
-    logger.info({ minutes }, 'Timer tunda pengingat dijadwalkan');
-  }
-
-  async function reloadSchedule(
-    nextTime?: string,
-    nextDays?: number[],
-  ): Promise<ScheduleState> {
-    if (nextTime !== undefined) {
-      const parsed = parseScheduleTime(nextTime);
-      currentTime = parsed.formatted;
-      await repo.setSetting(SETTING_SCHEDULE_TIME, currentTime);
-    }
-
-    if (nextDays !== undefined) {
-      currentDays = [...nextDays];
-      await repo.setSetting(SETTING_SCHEDULE_DAYS, JSON.stringify(currentDays));
-    }
-
-    registerDailyCron();
-    return { time: currentTime, days: [...currentDays] };
-  }
-
-  async function start(): Promise<void> {
-    await loadScheduleFromDb();
-    registerDailyCron();
-
-    expiryTask = cron.schedule(
-      '*/10 * * * *',
-      () => {
-        void checkApprovalTimeout();
-      },
-      { timezone: 'Asia/Jakarta' },
-    );
-
-    // Cek apakah jadwal hari ini terlewat saat bot offline
-    const { hour, minute } = parseScheduleTime(currentTime);
-    if (isScheduledTimePassedToday(hour, minute, currentDays)) {
-      await triggerDailyReminder('recovery');
-    }
+    logger.info({ cron: expr, timezone: 'Asia/Jakarta' }, 'Scheduler multi-user aktif');
   }
 
   function stop(): void {
@@ -228,22 +131,16 @@ export function createScheduler(
       dailyTask.stop();
       dailyTask = null;
     }
-    if (expiryTask) {
-      expiryTask.stop();
-      expiryTask = null;
+    for (const timer of snoozeTimers.values()) {
+      clearTimeout(timer);
     }
-    if (snoozeTimer) {
-      clearTimeout(snoozeTimer);
-      snoozeTimer = null;
-    }
+    snoozeTimers.clear();
   }
 
   return {
     start,
-    loadOnly: loadScheduleFromDb,
+    loadOnly: async () => {},
     stop,
-    reloadSchedule,
-    getCurrentSchedule: () => ({ time: currentTime, days: [...currentDays] }),
     scheduleSnooze,
     triggerDailyReminder,
   };

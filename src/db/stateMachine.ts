@@ -1,5 +1,6 @@
 export const REPORT_STATUSES = [
   'menunggu_trigger',
+  'menunggu_catatan',
   'mengambil_data',
   'draf_siap',
   'menunggu_edit',
@@ -13,12 +14,33 @@ export const REPORT_STATUSES = [
 export type ReportStatus = (typeof REPORT_STATUSES)[number];
 
 const ALLOWED_TRANSITIONS: Record<ReportStatus, readonly ReportStatus[]> = {
-  menunggu_trigger: ['mengambil_data', 'dilewati', 'kedaluwarsa', 'gagal'],
+  menunggu_trigger: [
+    'mengambil_data',
+    'menunggu_catatan',
+    'dilewati',
+    'kedaluwarsa',
+    'gagal',
+  ],
+  menunggu_catatan: [
+    'mengambil_data',
+    'draf_siap',
+    'dilewati',
+    'kedaluwarsa',
+    'gagal',
+  ],
   mengambil_data: ['draf_siap', 'dilewati', 'gagal'],
-  draf_siap: ['menunggu_edit', 'mengambil_data', 'mengirim', 'dilewati', 'kedaluwarsa', 'gagal'],
+  draf_siap: [
+    'menunggu_edit',
+    'menunggu_catatan',
+    'mengambil_data',
+    'mengirim',
+    'dilewati',
+    'kedaluwarsa',
+    'gagal',
+  ],
   menunggu_edit: ['draf_siap', 'dilewati', 'kedaluwarsa', 'gagal'],
   mengirim: ['terkirim', 'gagal'],
-  gagal: ['mengambil_data', 'draf_siap', 'mengirim', 'dilewati'],
+  gagal: ['mengambil_data', 'menunggu_catatan', 'draf_siap', 'mengirim', 'dilewati'],
   terkirim: [],
   dilewati: [],
   kedaluwarsa: [],
@@ -47,6 +69,7 @@ export function assertValidTransition(from: ReportStatus, to: ReportStatus): voi
 export function formatStatusLabel(status: ReportStatus): string {
   const labels: Record<ReportStatus, string> = {
     menunggu_trigger: '⏳ Menunggu aksi',
+    menunggu_catatan: '✍️ Menunggu catatan kegiatan',
     mengambil_data: '🔄 Mengambil data & merangkum',
     draf_siap: '📝 Draf siap ditinjau',
     menunggu_edit: '✏️ Menunggu teks revisi',

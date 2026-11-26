@@ -1,12 +1,14 @@
 import { InlineKeyboard, type Bot, type Context } from 'grammy';
 import { getGeminiCredentials } from '../ai/config.js';
-import { summarizeCommitsWithGemini } from '../ai/summarize.js';
+import {
+  summarizeCommitsWithGemini,
+  summarizeManualNotesWithGemini,
+} from '../ai/summarize.js';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo } from '../db/repo.js';
 import {
-  getGitHubCredentials,
-  getWhitelistedRepos,
-  toggleWhitelistedRepo,
+  getUserGitHubCredentials,
+  toggleUserWhitelistedRepo,
 } from '../github/auth.js';
 import { fetchTodayCommits, type CommitSummaryItem } from '../github/commits.js';
 import type { SchedulerService } from '../scheduler/cron.js';
@@ -16,10 +18,13 @@ import { getTodayWibDate } from '../utils/time.js';
 import {
   handleGeminiStatusAction,
   handleGitHubStatusAction,
+  handleManualNotesPromptAction,
   handleRepoListAction,
   handleRiwayatAction,
   handleStatusAction,
   handleTesAction,
+  handleTutorialAction,
+  resolveCurrentUser,
   type BotActionDeps,
 } from './actions.js';
 import {
@@ -44,7 +49,7 @@ async function disableInlineButtons(ctx: Context, updatedText: string): Promise<
 }
 
 /**
- * Mendaftarkan handler callback untuk tombol inline Telegram.
+ * Mendaftarkan handler callback untuk tombol inline Telegram (multi-user).
  */
 export function registerCallbacks(
   bot: Bot,
@@ -55,73 +60,96 @@ export function registerCallbacks(
 ): void {
   const deps: BotActionDeps = { config, logger, repo, getScheduler };
 
-  // === Menu Cepat dari Sapaan ("halo") ===
+  // === Menu Cepat ===
   bot.callbackQuery(MENU_ACTIONS.STATUS, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
-    await handleStatusAction(ctx, deps);
+    if (user) await handleStatusAction(ctx, deps, user);
   });
 
   bot.callbackQuery(MENU_ACTIONS.TES, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
-    await handleTesAction(ctx, deps);
+    if (user) await handleTesAction(ctx, deps, user);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.MANUAL_AI, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    await ctx.answerCallbackQuery();
+    if (user) await handleManualNotesPromptAction(ctx, deps, user);
   });
 
   bot.callbackQuery(MENU_ACTIONS.GITHUB, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
-    await handleGitHubStatusAction(ctx, deps);
+    if (user) await handleGitHubStatusAction(ctx, deps, user);
   });
 
   bot.callbackQuery(MENU_ACTIONS.REPO, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
-    await handleRepoListAction(ctx, deps);
+    if (user) await handleRepoListAction(ctx, deps, user);
   });
 
   bot.callbackQuery(MENU_ACTIONS.GEMINI, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
-    await handleGeminiStatusAction(ctx, deps);
+    if (user) await handleGeminiStatusAction(ctx, deps, user);
   });
 
   bot.callbackQuery(MENU_ACTIONS.RIWAYAT, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
-    await handleRiwayatAction(ctx, deps);
+    if (user) await handleRiwayatAction(ctx, deps, user);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.TUTORIAL, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    await ctx.answerCallbackQuery();
+    if (user) await handleTutorialAction(ctx, user);
   });
 
   bot.callbackQuery(MENU_ACTIONS.SCHEDULE, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
-    const schedule = getScheduler().getCurrentSchedule();
+    if (!user) return;
+
     await ctx.reply(
       [
         '🕒 *Pengaturan Jadwal Saat Ini*',
-        `• Jam: *${schedule.time} WIB*`,
-        `• Hari aktif: *${formatScheduleDays(schedule.days)}*`,
+        `• Jam: *${user.schedule_time} WIB*`,
+        `• Hari aktif: *${formatScheduleDays(user.schedule_days)}*`,
         '',
         'Pilih jam notifikasi langsung (14:00–17:00 WIB) di bawah ini, atau ubah hari dengan `/hari senin-jumat`:',
       ].join('\n'),
       {
         parse_mode: 'Markdown',
-        reply_markup: buildScheduleKeyboard(schedule.time),
+        reply_markup: buildScheduleKeyboard(user.schedule_time),
       },
     );
   });
 
   bot.callbackQuery(/^set_jam:(\d{2}:\d{2})$/, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
     const chosenTime = ctx.match[1];
     try {
-      const updated = await getScheduler().reloadSchedule(chosenTime, undefined);
+      const updated = await repo.updateUserSchedule(user.id, { time: chosenTime });
       await ctx.answerCallbackQuery({
-        text: `✅ Jam notifikasi diubah ke ${updated.time} WIB`,
+        text: `✅ Jam notifikasi diubah ke ${updated.schedule_time} WIB`,
       });
       await ctx.editMessageText(
         [
           '🕒 *Pengaturan Jadwal Saat Ini*',
-          `• Jam: *${updated.time} WIB*`,
-          `• Hari aktif: *${formatScheduleDays(updated.days)}*`,
+          `• Jam: *${updated.schedule_time} WIB*`,
+          `• Hari aktif: *${formatScheduleDays(updated.schedule_days)}*`,
           '',
           'Pilih jam notifikasi langsung (14:00–17:00 WIB) di bawah ini, atau ubah hari dengan `/hari senin-jumat`:',
         ].join('\n'),
         {
           parse_mode: 'Markdown',
-          reply_markup: buildScheduleKeyboard(updated.time),
+          reply_markup: buildScheduleKeyboard(updated.schedule_time),
         },
       );
     } catch (error) {
@@ -131,21 +159,31 @@ export function registerCallbacks(
   });
 
   // === Alur Pengingat Harian ===
-  bot.callbackQuery(CALLBACK_ACTIONS.SUMMARIZE, async (ctx) => {
-    const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Buat Ringkasan diklik');
+  bot.callbackQuery(CALLBACK_ACTIONS.MANUAL_AI, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    await ctx.answerCallbackQuery();
+    if (!user) return;
+    await disableInlineButtons(ctx, '✍️ *Mode Catatan Kegiatan AI dipilih.*');
+    await handleManualNotesPromptAction(ctx, deps, user);
+  });
 
-    const creds = await getGitHubCredentials(config, repo);
+  bot.callbackQuery(CALLBACK_ACTIONS.SUMMARIZE, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
+    const today = getTodayWibDate();
+    logger.info({ userId: user.id, today }, 'Tombol Buat Ringkasan GitHub diklik');
+
+    const creds = getUserGitHubCredentials(config, user);
     if (!creds) {
       await ctx.answerCallbackQuery({
-        text: 'Akun GitHub belum terhubung. Kirim /github dulu.',
+        text: 'GitHub belum ditautkan. Kirim /github atau pilih Catatan AI.',
         show_alert: true,
       });
       return;
     }
 
-    const whitelisted = await getWhitelistedRepos(config, repo);
-    if (whitelisted.length === 0) {
+    if (user.whitelisted_repos.length === 0) {
       await ctx.answerCallbackQuery({
         text: 'Belum ada repo whitelist. Pilih lewat /repo dulu.',
         show_alert: true,
@@ -156,16 +194,31 @@ export function registerCallbacks(
     const gemini = await getGeminiCredentials(config, repo);
     if (!gemini) {
       await ctx.answerCallbackQuery({
-        text: 'Gemini API Key belum diatur. Kirim /gemini dulu.',
+        text: 'Layanan Gemini AI global belum diatur admin.',
         show_alert: true,
       });
       return;
     }
 
     try {
-      await repo.createOrGetTodayReport(today, ctx.callbackQuery.message?.message_id);
-      await repo.updateStatus(today, 'mengambil_data');
-      await ctx.answerCallbackQuery({ text: 'Menarik commit & membuat ringkasan Gemini...' });
+      const quota = await repo.consumeAiQuota(
+        user.id,
+        today,
+        config.AI_DAILY_LIMIT,
+      );
+
+      await repo.createOrGetTodayReport(
+        user.id,
+        today,
+        ctx.callbackQuery.message?.message_id,
+        'github',
+      );
+      await repo.updateStatus(user.id, today, 'mengambil_data', {
+        sourceMode: 'github',
+      });
+      await ctx.answerCallbackQuery({
+        text: 'Menarik commit & membuat ringkasan Gemini...',
+      });
       await disableInlineButtons(
         ctx,
         '🔄 *Sedang mengambil commit GitHub & merangkum dengan Gemini...*',
@@ -174,21 +227,21 @@ export function registerCallbacks(
       const result = await fetchTodayCommits({
         token: creds.token,
         username: creds.username,
-        repos: whitelisted,
+        repos: user.whitelisted_repos,
         date: today,
       });
 
       if (result.commits.length === 0) {
-        await repo.updateStatus(today, 'dilewati');
+        await repo.updateStatus(user.id, today, 'dilewati');
         await ctx.reply(
-          `ℹ️ *Tidak ada commit hari ini (\`${today}\`)* pada repo whitelist.\nLaporan tidak dibuat.`,
+          `ℹ️ *Tidak ada commit hari ini (\`${today}\`)* pada repo whitelist.\nJika ada kegiatan non-coding, kamu bisa klik *✍️ Catatan AI* di menu \`halo\`.`,
           { parse_mode: 'Markdown' },
         );
         return;
       }
 
       const commitsJson = JSON.stringify(result.commits);
-      await repo.saveCommits(today, commitsJson);
+      await repo.saveCommits(user.id, today, commitsJson);
 
       const draft = await summarizeCommitsWithGemini({
         apiKey: gemini.apiKey,
@@ -197,42 +250,49 @@ export function registerCallbacks(
         commits: result.commits,
       });
 
-      const sentDraft = await ctx.reply(buildDraftMessage(today, draft), {
+      const sentDraft = await ctx.reply(buildDraftMessage(today, draft, quota), {
         parse_mode: 'Markdown',
         reply_markup: buildDraftKeyboard(),
       });
 
-      await repo.saveDraft(today, {
+      await repo.saveDraft(user.id, today, {
+        sourceMode: 'github',
         commitsJson,
         ...draft,
         telegramMessageId: sentDraft.message_id,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      logger.error({ err: msg, today }, 'Gagal membuat ringkasan');
+      logger.error({ err: msg, userId: user.id, today }, 'Gagal membuat ringkasan');
       try {
-        await repo.updateStatus(today, 'gagal', { error: msg });
+        await repo.updateStatus(user.id, today, 'gagal', { error: msg });
       } catch {
         // Abaikan jika transisi tidak memungkinkan
       }
       await ctx.reply(`❌ Gagal membuat ringkasan: ${msg}`, {
-        reply_markup: new InlineKeyboard().text('🔄 Coba Lagi', CALLBACK_ACTIONS.SUMMARIZE),
+        reply_markup: new InlineKeyboard().text(
+          '🔄 Coba Lagi',
+          CALLBACK_ACTIONS.SUMMARIZE,
+        ),
       });
     }
   });
 
   bot.callbackQuery(CALLBACK_ACTIONS.SKIP, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
     const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Lewati diklik');
 
     try {
-      await repo.createOrGetTodayReport(today, ctx.callbackQuery.message?.message_id);
-      await repo.updateStatus(today, 'dilewati');
+      await repo.createOrGetTodayReport(
+        user.id,
+        today,
+        ctx.callbackQuery.message?.message_id,
+      );
+      await repo.updateStatus(user.id, today, 'dilewati');
       await ctx.answerCallbackQuery({ text: 'Laporan hari ini dilewati.' });
       await disableInlineButtons(ctx, '⏭️ *Laporan hari ini dilewati.*');
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.warn({ err: msg, today }, 'Gagal transisi status saat Lewati');
+    } catch {
       await ctx.answerCallbackQuery({
         text: 'Aksi tidak valid untuk status laporan saat ini.',
         show_alert: true,
@@ -241,8 +301,9 @@ export function registerCallbacks(
   });
 
   bot.callbackQuery(CALLBACK_ACTIONS.SNOOZE_30M, async (ctx) => {
-    logger.info({ chatId: ctx.chat?.id }, 'Tombol Ingatkan 30 menit diklik');
-    getScheduler().scheduleSnooze(30);
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+    getScheduler().scheduleSnooze(30, user.telegram_chat_id);
     await ctx.answerCallbackQuery({ text: 'Oke, diingatkan 30 menit lagi.' });
     await disableInlineButtons(
       ctx,
@@ -252,19 +313,19 @@ export function registerCallbacks(
 
   // === Alur Review Draf Gemini ===
   bot.callbackQuery(DRAFT_ACTIONS.APPROVE, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
     const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Setujui & Kirim diklik');
 
     try {
-      await repo.updateStatus(today, 'mengirim');
-      await ctx.answerCallbackQuery({ text: 'Draf disetujui!' });
+      await repo.updateStatus(user.id, today, 'mengirim');
+      await repo.updateStatus(user.id, today, 'terkirim');
+      await ctx.answerCallbackQuery({ text: 'Draf disetujui & disimpan!' });
       await disableInlineButtons(
         ctx,
-        '✅ *Draf disetujui!*\n\n_(Otomasi pengisian & submit ke Monev via Playwright akan dihubungkan pada Fase 6.)_',
+        '✅ *Draf disetujui & disimpan ke riwayat!*\nSilakan salin 3 kolom di atas ke halaman Monev-mu.',
       );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.warn({ err: msg, today }, 'Gagal menyetujui draf');
+    } catch {
       await ctx.answerCallbackQuery({
         text: 'Draf tidak dapat disetujui pada status saat ini.',
         show_alert: true,
@@ -273,17 +334,21 @@ export function registerCallbacks(
   });
 
   bot.callbackQuery(DRAFT_ACTIONS.EDIT, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
     const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Edit draf diklik');
 
     try {
-      const report = await repo.getTodayReport(today);
+      const report = await repo.getTodayReport(user.id, today);
       if (!report) {
-        await ctx.answerCallbackQuery({ text: 'Data laporan tidak ditemukan.', show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: 'Data laporan tidak ditemukan.',
+          show_alert: true,
+        });
         return;
       }
 
-      await repo.updateStatus(today, 'menunggu_edit');
+      await repo.updateStatus(user.id, today, 'menunggu_edit');
       await ctx.answerCallbackQuery({ text: 'Silakan kirim teks revisi.' });
       await disableInlineButtons(ctx, '✏️ *Menunggu revisi teks dari kamu...*');
 
@@ -295,9 +360,7 @@ export function registerCallbacks(
         }),
         { parse_mode: 'Markdown' },
       );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.warn({ err: msg, today }, 'Gagal masuk mode edit');
+    } catch {
       await ctx.answerCallbackQuery({
         text: 'Tidak bisa mengedit pada status saat ini.',
         show_alert: true,
@@ -306,54 +369,68 @@ export function registerCallbacks(
   });
 
   bot.callbackQuery(DRAFT_ACTIONS.REGENERATE, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
     const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Buat Ulang draf diklik');
 
     const gemini = await getGeminiCredentials(config, repo);
     if (!gemini) {
       await ctx.answerCallbackQuery({
-        text: 'Gemini API Key belum diatur. Kirim /gemini dulu.',
+        text: 'Layanan Gemini AI global belum diatur admin.',
         show_alert: true,
       });
       return;
     }
 
     try {
-      const report = await repo.getTodayReport(today);
-      if (!report || !report.commits_json) {
+      const report = await repo.getTodayReport(user.id, today);
+      if (!report || (!report.commits_json && !report.manual_notes)) {
         await ctx.answerCallbackQuery({
-          text: 'Data commit tidak ditemukan. Mulai ulang dengan /tes.',
+          text: 'Data sumber tidak ditemukan. Mulai ulang dengan /tes.',
           show_alert: true,
         });
         return;
       }
 
-      const commits = JSON.parse(report.commits_json) as CommitSummaryItem[];
-      await repo.updateStatus(today, 'mengambil_data');
+      const quota = await repo.consumeAiQuota(
+        user.id,
+        today,
+        config.AI_DAILY_LIMIT,
+      );
+
+      await repo.updateStatus(user.id, today, 'mengambil_data');
       await ctx.answerCallbackQuery({ text: 'Membuat ulang draf dengan Gemini...' });
       await disableInlineButtons(ctx, '🔄 *Membuat ulang draf dengan Gemini...*');
 
-      const draft = await summarizeCommitsWithGemini({
-        apiKey: gemini.apiKey,
-        model: gemini.model,
-        date: today,
-        commits,
-      });
+      const draft =
+        report.source_mode === 'manual_ai' && report.manual_notes
+          ? await summarizeManualNotesWithGemini({
+              apiKey: gemini.apiKey,
+              model: gemini.model,
+              date: today,
+              manualNotes: report.manual_notes,
+            })
+          : await summarizeCommitsWithGemini({
+              apiKey: gemini.apiKey,
+              model: gemini.model,
+              date: today,
+              commits: JSON.parse(report.commits_json!) as CommitSummaryItem[],
+            });
 
-      const sentDraft = await ctx.reply(buildDraftMessage(today, draft), {
+      const sentDraft = await ctx.reply(buildDraftMessage(today, draft, quota), {
         parse_mode: 'Markdown',
         reply_markup: buildDraftKeyboard(),
       });
 
-      await repo.saveDraft(today, {
+      await repo.saveDraft(user.id, today, {
         ...draft,
         telegramMessageId: sentDraft.message_id,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      logger.error({ err: msg, today }, 'Gagal membuat ulang draf');
+      logger.error({ err: msg, userId: user.id, today }, 'Gagal membuat ulang draf');
       try {
-        await repo.updateStatus(today, 'gagal', { error: msg });
+        await repo.updateStatus(user.id, today, 'gagal', { error: msg });
       } catch {
         // Abaikan jika transisi gagal
       }
@@ -362,16 +439,15 @@ export function registerCallbacks(
   });
 
   bot.callbackQuery(DRAFT_ACTIONS.CANCEL, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
     const today = getTodayWibDate();
-    logger.info({ chatId: ctx.chat?.id, today }, 'Tombol Batal draf diklik');
 
     try {
-      await repo.updateStatus(today, 'dilewati');
+      await repo.updateStatus(user.id, today, 'dilewati');
       await ctx.answerCallbackQuery({ text: 'Draf dibatalkan.' });
       await disableInlineButtons(ctx, '❌ *Draf laporan hari ini dibatalkan.*');
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.warn({ err: msg, today }, 'Gagal membatalkan draf');
+    } catch {
       await ctx.answerCallbackQuery({
         text: 'Tidak dapat membatalkan pada status saat ini.',
         show_alert: true,
@@ -381,9 +457,12 @@ export function registerCallbacks(
 
   // === Callback Toggle & Pagination Repo Whitelist ===
   bot.callbackQuery(/^repo_tg:(\d+):(\d+)$/, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
     const idx = Number(ctx.match[1]);
     const page = Number(ctx.match[2]);
-    const cached = getCachedRepos();
+    const cached = getCachedRepos(user.telegram_chat_id);
     const target = cached[idx];
 
     if (!target) {
@@ -394,9 +473,9 @@ export function registerCallbacks(
       return;
     }
 
-    const { repos: whitelisted, added } = await toggleWhitelistedRepo(
-      config,
+    const { repos: whitelisted, added } = await toggleUserWhitelistedRepo(
       repo,
+      user,
       target.fullName,
     );
 
@@ -422,8 +501,11 @@ export function registerCallbacks(
   });
 
   bot.callbackQuery(/^repo_page:(\d+)$/, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
     const page = Number(ctx.match[1]);
-    const cached = getCachedRepos();
+    const cached = getCachedRepos(user.telegram_chat_id);
     if (cached.length === 0) {
       await ctx.answerCallbackQuery({
         text: 'Daftar repo kedaluwarsa. Jalankan /repo lagi.',
@@ -432,16 +514,15 @@ export function registerCallbacks(
       return;
     }
 
-    const whitelisted = await getWhitelistedRepos(config, repo);
     const { keyboard, totalPages, currentPage } = buildRepoSelectionKeyboard(
       cached,
-      whitelisted,
+      user.whitelisted_repos,
       page,
     );
 
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(
-      `📚 *Pilih Repository Whitelist* (Halaman ${currentPage + 1}/${totalPages})\nAktif saat ini: *${whitelisted.length} repo*\n\nKlik tombol untuk mengaktifkan/menonaktifkan:`,
+      `📚 *Pilih Repository Whitelist* (Halaman ${currentPage + 1}/${totalPages})\nAktif saat ini: *${user.whitelisted_repos.length} repo*\n\nKlik tombol untuk mengaktifkan/menonaktifkan:`,
       {
         parse_mode: 'Markdown',
         reply_markup: keyboard,
@@ -450,16 +531,18 @@ export function registerCallbacks(
   });
 
   bot.callbackQuery('repo_done', async (ctx) => {
-    const whitelisted = await getWhitelistedRepos(config, repo);
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
     await ctx.answerCallbackQuery({ text: 'Daftar repo disimpan!' });
     const listText =
-      whitelisted.length > 0
-        ? whitelisted.map((r) => `• \`${r}\``).join('\n')
+      user.whitelisted_repos.length > 0
+        ? user.whitelisted_repos.map((r) => `• \`${r}\``).join('\n')
         : '_Belum ada repo dipilih_';
 
     await disableInlineButtons(
       ctx,
-      `✅ *Whitelist repo tersimpan (${whitelisted.length}):*\n${listText}`,
+      `✅ *Whitelist repo tersimpan (${user.whitelisted_repos.length}):*\n${listText}`,
     );
   });
 }

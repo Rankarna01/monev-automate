@@ -1,7 +1,11 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import type { CommitSummaryItem } from '../github/commits.js';
 import { validateDraft, type ReportDraft } from '../utils/validate.js';
-import { buildCommitsPromptInput, SYSTEM_PROMPT } from './prompt.js';
+import {
+  buildCommitsPromptInput,
+  buildManualNotesPromptInput,
+  SYSTEM_PROMPT,
+} from './prompt.js';
 
 const MAX_VALIDATION_RETRIES = 2;
 const FALLBACK_MODELS = [
@@ -16,6 +20,14 @@ export interface SummarizeOptions {
   model: string;
   date: string;
   commits: CommitSummaryItem[];
+}
+
+export interface SummarizeNotesOptions {
+  apiKey: string;
+  model: string;
+  date: string;
+  manualNotes: string;
+  commits?: CommitSummaryItem[];
 }
 
 /**
@@ -80,36 +92,24 @@ async function generateWithFallback(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-/**
- * Merangkum daftar commit menjadi 3 field laporan Monev menggunakan Gemini API,
- * lengkap dengan fallback model jika 503/high-demand, validasi zod (>= 100 karakter),
- * dan retry otomatis maksimal 2 kali.
- */
-export async function summarizeCommitsWithGemini(
-  options: SummarizeOptions,
+async function runPromptWithValidation(
+  apiKey: string,
+  model: string,
+  buildPrompt: (retryHint?: string) => string,
 ): Promise<ReportDraft> {
-  if (!options.apiKey) {
+  if (!apiKey) {
     throw new Error(
-      'GEMINI_API_KEY belum diatur. Atur lewat /gemini key <API_KEY> di Telegram.',
+      'GEMINI_API_KEY global belum diatur. Hubungi admin atau atur via /gemini key.',
     );
   }
 
-  if (options.commits.length === 0) {
-    throw new Error('Tidak ada commit untuk dirangkum.');
-  }
-
-  const ai = new GoogleGenAI({ apiKey: options.apiKey });
+  const ai = new GoogleGenAI({ apiKey });
   let retryHint: string | undefined;
   let lastErrors: string[] = [];
 
   for (let attempt = 0; attempt <= MAX_VALIDATION_RETRIES; attempt++) {
-    const promptInput = buildCommitsPromptInput(
-      options.date,
-      options.commits,
-      retryHint,
-    );
-
-    const rawText = await generateWithFallback(ai, options.model, promptInput);
+    const promptInput = buildPrompt(retryHint);
+    const rawText = await generateWithFallback(ai, model, promptInput);
 
     let parsedJson: unknown;
     try {
@@ -131,5 +131,40 @@ export async function summarizeCommitsWithGemini(
 
   throw new Error(
     `Ringkasan Gemini gagal validasi setelah ${MAX_VALIDATION_RETRIES + 1} percobaan: ${lastErrors.join('; ')}`,
+  );
+}
+
+/**
+ * Merangkum daftar commit menjadi 3 field laporan Monev menggunakan Gemini API.
+ */
+export async function summarizeCommitsWithGemini(
+  options: SummarizeOptions,
+): Promise<ReportDraft> {
+  if (options.commits.length === 0) {
+    throw new Error('Tidak ada commit untuk dirangkum.');
+  }
+
+  return runPromptWithValidation(options.apiKey, options.model, (retryHint) =>
+    buildCommitsPromptInput(options.date, options.commits, retryHint),
+  );
+}
+
+/**
+ * Mengembangkan catatan singkat kegiatan pengguna (tanpa GitHub / hybrid) menjadi 3 field Monev.
+ */
+export async function summarizeManualNotesWithGemini(
+  options: SummarizeNotesOptions,
+): Promise<ReportDraft> {
+  if (!options.manualNotes.trim()) {
+    throw new Error('Catatan kegiatan tidak boleh kosong.');
+  }
+
+  return runPromptWithValidation(options.apiKey, options.model, (retryHint) =>
+    buildManualNotesPromptInput(
+      options.date,
+      options.manualNotes,
+      options.commits ?? [],
+      retryHint,
+    ),
   );
 }

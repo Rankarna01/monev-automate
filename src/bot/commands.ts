@@ -6,15 +6,14 @@ import {
   saveGeminiModel,
   validateGeminiApiKey,
 } from '../ai/config.js';
+import { summarizeManualNotesWithGemini } from '../ai/summarize.js';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo } from '../db/repo.js';
 import {
-  clearGitHubCredentials,
-  getWhitelistedRepos,
+  clearUserGitHubCredentials,
   pollDeviceAccessToken,
   requestDeviceCode,
-  saveGitHubCredentials,
-  saveWhitelistedRepos,
+  saveUserGitHubCredentials,
   validateGitHubToken,
 } from '../github/auth.js';
 import { parseRepoFullName } from '../github/commits.js';
@@ -30,10 +29,13 @@ import { parseDraftEditText, validateDraft } from '../utils/validate.js';
 import {
   handleGeminiStatusAction,
   handleGitHubStatusAction,
+  handleManualNotesPromptAction,
   handleRepoListAction,
   handleRiwayatAction,
   handleStatusAction,
   handleTesAction,
+  handleTutorialAction,
+  resolveCurrentUser,
   type BotActionDeps,
 } from './actions.js';
 import {
@@ -41,13 +43,11 @@ import {
   buildDraftMessage,
   buildGreetingMenuKeyboard,
   buildGreetingMessage,
-  buildStartMessage,
+  buildOnboardingStartMessage,
 } from './messages.js';
 
-const GREETING_REGEX = /^(halo+|hallo+|hai+|hi+|pagi|siang|sore|malam|menu|help|p)$/i;
-
 /**
- * Mendaftarkan perintah slash bot Telegram dan handler pesan teks (sapaan & edit draf).
+ * Mendaftarkan perintah slash bot Telegram dan handler pesan teks multi-user.
  */
 export function registerCommands(
   bot: Bot,
@@ -59,27 +59,54 @@ export function registerCommands(
   const deps: BotActionDeps = { config, logger, repo, getScheduler };
 
   bot.command('start', async (ctx) => {
-    logger.info({ chatId: ctx.chat.id }, 'Perintah /start diterima');
-    const schedule = getScheduler().getCurrentSchedule();
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
+    const today = getTodayWibDate();
+    const quota = await repo.getAiQuotaStatus(
+      user.id,
+      today,
+      config.AI_DAILY_LIMIT,
+    );
+
+    logger.info(
+      { chatId: user.telegram_chat_id, userId: user.id },
+      'Perintah /start diterima',
+    );
+
     await ctx.reply(
-      buildStartMessage(schedule.time, formatScheduleDays(schedule.days)),
-      { parse_mode: 'Markdown' },
+      buildOnboardingStartMessage(
+        user,
+        quota,
+        formatScheduleDays(user.schedule_days),
+      ),
+      {
+        parse_mode: 'Markdown',
+        reply_markup: buildGreetingMenuKeyboard(),
+      },
     );
   });
 
   bot.command('status', async (ctx) => {
-    logger.info({ chatId: ctx.chat.id }, 'Perintah /status diterima');
-    await handleStatusAction(ctx, deps);
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+    await handleStatusAction(ctx, deps, user);
+  });
+
+  bot.command('tutorial', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+    await handleTutorialAction(ctx, user);
   });
 
   bot.command('jam', async (ctx) => {
-    const arg = ctx.match.trim();
-    const scheduler = getScheduler();
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
 
+    const arg = ctx.match.trim();
     if (!arg) {
-      const current = scheduler.getCurrentSchedule();
       await ctx.reply(
-        `🕒 Jam pengingat saat ini: *${current.time} WIB*\nGunakan \`/jam 14:30\` untuk mengubah.`,
+        `🕒 Jam pengingat saat ini: *${user.schedule_time} WIB*\nGunakan \`/jam 15:00\` atau klik *🕒 Ubah Jam & Jadwal* di menu.`,
         { parse_mode: 'Markdown' },
       );
       return;
@@ -87,10 +114,11 @@ export function registerCommands(
 
     try {
       const parsed = parseScheduleTime(arg);
-      const updated = await scheduler.reloadSchedule(parsed.formatted, undefined);
-      logger.info({ time: updated.time }, 'Jadwal jam diperbarui via /jam');
+      const updated = await repo.updateUserSchedule(user.id, {
+        time: parsed.formatted,
+      });
       await ctx.reply(
-        `✅ Jam pengingat harian diubah menjadi *${updated.time} WIB* (${formatScheduleDays(updated.days)}).`,
+        `✅ Jam pengingat harian diubah menjadi *${updated.schedule_time} WIB* (${formatScheduleDays(updated.schedule_days)}).`,
         { parse_mode: 'Markdown' },
       );
     } catch (error) {
@@ -100,13 +128,13 @@ export function registerCommands(
   });
 
   bot.command('hari', async (ctx) => {
-    const arg = ctx.match.trim();
-    const scheduler = getScheduler();
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
 
+    const arg = ctx.match.trim();
     if (!arg) {
-      const current = scheduler.getCurrentSchedule();
       await ctx.reply(
-        `📅 Hari aktif saat ini: *${formatScheduleDays(current.days)}*\nContoh ubah: \`/hari senin-jumat\` atau \`/hari senin,rabu,jumat\``,
+        `📅 Hari aktif saat ini: *${formatScheduleDays(user.schedule_days)}*\nContoh ubah: \`/hari senin-jumat\` atau \`/hari senin,rabu,jumat\``,
         { parse_mode: 'Markdown' },
       );
       return;
@@ -114,10 +142,9 @@ export function registerCommands(
 
     try {
       const days = parseScheduleDays(arg);
-      const updated = await scheduler.reloadSchedule(undefined, days);
-      logger.info({ days: updated.days }, 'Hari aktif diperbarui via /hari');
+      const updated = await repo.updateUserSchedule(user.id, { days });
       await ctx.reply(
-        `✅ Hari aktif pengingat diubah menjadi *${formatScheduleDays(updated.days)}* (pukul *${updated.time} WIB*).`,
+        `✅ Hari aktif pengingat diubah menjadi *${formatScheduleDays(updated.schedule_days)}* (pukul *${updated.schedule_time} WIB*).`,
         { parse_mode: 'Markdown' },
       );
     } catch (error) {
@@ -127,12 +154,15 @@ export function registerCommands(
   });
 
   bot.command('github', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
     const raw = ctx.match.trim();
     const [sub, ...rest] = raw.split(/\s+/);
     const arg = rest.join(' ').trim();
 
     if (!sub || sub === 'status') {
-      await handleGitHubStatusAction(ctx, deps);
+      await handleGitHubStatusAction(ctx, deps, user);
       return;
     }
 
@@ -140,10 +170,8 @@ export function registerCommands(
       if (!config.GITHUB_CLIENT_ID) {
         await ctx.reply(
           [
-            '⚠️ `GITHUB_CLIENT_ID` belum diisi di `.env`.',
-            'Untuk login via browser (termasuk akun Google GitHub), buat OAuth App di GitHub Developer Settings, centang *Enable Device Flow*, lalu isi `GITHUB_CLIENT_ID` di `.env`.',
-            '',
-            'Alternatif cepat: kirim `/github token <PAT_KAMU>`.',
+            '⚠️ `GITHUB_CLIENT_ID` belum diatur oleh admin.',
+            'Alternatif cepat: buat Fine-grained PAT (Read-only `Contents` & `Metadata`) di GitHub lalu kirim `/github token <PAT_KAMU>`.',
           ].join('\n'),
           { parse_mode: 'Markdown' },
         );
@@ -156,7 +184,7 @@ export function registerCommands(
           [
             '🔐 *Login GitHub via Browser*',
             `1. Buka link: ${device.verification_uri}`,
-            `2. Login ke GitHub (bisa lewat *Continue with Google*)`,
+            '2. Login ke akun GitHub pribadimu (bisa lewat *Continue with Google*)',
             `3. Masukkan kode: \`${device.user_code}\``,
             '',
             '⏳ Menunggu konfirmasi dari browser...',
@@ -172,19 +200,28 @@ export function registerCommands(
               device.interval,
               device.expires_in,
             );
-            const user = await validateGitHubToken(accessToken);
-            await saveGitHubCredentials(repo, accessToken, user.login);
-            logger.info({ username: user.login }, 'GitHub OAuth Device Flow berhasil');
+            const ghUser = await validateGitHubToken(accessToken);
+            await saveUserGitHubCredentials(
+              config,
+              repo,
+              user.id,
+              accessToken,
+              ghUser.login,
+            );
+            logger.info(
+              { userId: user.id, username: ghUser.login },
+              'GitHub OAuth Device Flow berhasil',
+            );
             await bot.api.sendMessage(
-              config.TELEGRAM_CHAT_ID,
-              `✅ *GitHub berhasil terhubung sebagai \`${user.login}\`!*\n\nSekarang kirim \`/repo\` untuk memilih repository lewat tombol.`,
+              user.telegram_chat_id,
+              `✅ *GitHub berhasil terhubung sebagai \`${ghUser.login}\`!*\n\nSekarang kirim \`/repo\` untuk memilih repository lewat tombol.`,
               { parse_mode: 'Markdown' },
             );
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            logger.warn({ err: msg }, 'GitHub OAuth Device Flow gagal');
+            logger.warn({ err: msg, userId: user.id }, 'GitHub OAuth Device Flow gagal');
             await bot.api.sendMessage(
-              config.TELEGRAM_CHAT_ID,
+              user.telegram_chat_id,
               `❌ Login GitHub gagal: ${msg}`,
             );
           }
@@ -205,11 +242,14 @@ export function registerCommands(
       }
 
       try {
-        const user = await validateGitHubToken(arg);
-        await saveGitHubCredentials(repo, arg, user.login);
-        logger.info({ username: user.login }, 'GitHub PAT tersimpan via /github token');
+        const ghUser = await validateGitHubToken(arg);
+        await saveUserGitHubCredentials(config, repo, user.id, arg, ghUser.login);
+        logger.info(
+          { userId: user.id, username: ghUser.login },
+          'GitHub PAT user tersimpan',
+        );
         await ctx.reply(
-          `✅ *GitHub terhubung sebagai \`${user.login}\`!*\nKirim \`/repo\` untuk memilih repository lewat tombol.`,
+          `✅ *GitHub terhubung sebagai \`${ghUser.login}\`!*\nKirim \`/repo\` untuk memilih repository lewat tombol.`,
           { parse_mode: 'Markdown' },
         );
       } catch {
@@ -219,8 +259,8 @@ export function registerCommands(
     }
 
     if (sub === 'logout') {
-      await clearGitHubCredentials(repo);
-      await ctx.reply('✅ Kredensial GitHub dinamis di database telah dihapus.');
+      await clearUserGitHubCredentials(repo, user.id);
+      await ctx.reply('✅ Kredensial GitHub di akunmu telah dihapus.');
       return;
     }
 
@@ -231,6 +271,9 @@ export function registerCommands(
   });
 
   bot.command('repo', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
     const raw = ctx.match.trim();
     const [sub, target] = raw.split(/\s+/);
 
@@ -238,10 +281,12 @@ export function registerCommands(
       try {
         const parsed = parseRepoFullName(target);
         const fullName = `${parsed.owner}/${parsed.repo}`;
-        const current = await getWhitelistedRepos(config, repo);
-        const saved = await saveWhitelistedRepos(repo, [...current, fullName]);
+        const updated = await repo.updateUserRepos(user.id, [
+          ...user.whitelisted_repos,
+          fullName,
+        ]);
         await ctx.reply(
-          `✅ \`${fullName}\` ditambahkan ke whitelist (total: ${saved.length} repo).`,
+          `✅ \`${fullName}\` ditambahkan ke whitelist (total: ${updated.whitelisted_repos.length} repo).`,
           { parse_mode: 'Markdown' },
         );
       } catch (error) {
@@ -252,26 +297,37 @@ export function registerCommands(
     }
 
     if (sub === 'hapus' && target) {
-      const current = await getWhitelistedRepos(config, repo);
-      const next = current.filter((item) => item !== target.trim());
-      const saved = await saveWhitelistedRepos(repo, next);
+      const next = user.whitelisted_repos.filter((item) => item !== target.trim());
+      const updated = await repo.updateUserRepos(user.id, next);
       await ctx.reply(
-        `🗑️ \`${target.trim()}\` dihapus dari whitelist (sisa: ${saved.length} repo).`,
+        `🗑️ \`${target.trim()}\` dihapus dari whitelist (sisa: ${updated.whitelisted_repos.length} repo).`,
         { parse_mode: 'Markdown' },
       );
       return;
     }
 
-    await handleRepoListAction(ctx, deps);
+    await handleRepoListAction(ctx, deps, user);
   });
 
   bot.command('gemini', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
     const raw = ctx.match.trim();
     const [sub, ...rest] = raw.split(/\s+/);
     const arg = rest.join(' ').trim();
 
     if (!sub || sub === 'status') {
-      await handleGeminiStatusAction(ctx, deps);
+      await handleGeminiStatusAction(ctx, deps, user);
+      return;
+    }
+
+    // Pengaturan API Key global hanya boleh diubah oleh admin (TELEGRAM_CHAT_ID di .env)
+    if (user.telegram_chat_id !== config.TELEGRAM_CHAT_ID) {
+      await ctx.reply(
+        'ℹ️ Layanan Gemini AI menggunakan kuota global. Gunakan `/gemini` untuk melihat sisa kuota harianmu.',
+        { parse_mode: 'Markdown' },
+      );
       return;
     }
 
@@ -287,12 +343,11 @@ export function registerCommands(
       const model = current?.model ?? config.GEMINI_MODEL;
 
       try {
-        await ctx.reply('⏳ Memverifikasi Gemini API Key...');
+        await ctx.reply('⏳ Memverifikasi Gemini API Key global...');
         await validateGeminiApiKey(arg, model);
         await saveGeminiApiKey(repo, arg);
-        logger.info({ model }, 'GEMINI_API_KEY tersimpan via /gemini key');
         await ctx.reply(
-          `✅ *Gemini API Key valid dan tersimpan!*\nModel aktif: \`${model}\``,
+          `✅ *Gemini API Key global valid dan tersimpan!*\nModel aktif: \`${model}\``,
           { parse_mode: 'Markdown' },
         );
       } catch (error) {
@@ -310,7 +365,7 @@ export function registerCommands(
         return;
       }
       await saveGeminiModel(repo, arg);
-      await ctx.reply(`✅ Model Gemini diubah menjadi \`${arg}\`.`, {
+      await ctx.reply(`✅ Model Gemini global diubah menjadi \`${arg}\`.`, {
         parse_mode: 'Markdown',
       });
       return;
@@ -318,7 +373,7 @@ export function registerCommands(
 
     if (sub === 'hapus') {
       await clearGeminiApiKey(repo);
-      await ctx.reply('✅ API key Gemini dinamis di database telah dihapus.');
+      await ctx.reply('✅ API key Gemini global dinamis telah dihapus.');
       return;
     }
 
@@ -328,24 +383,90 @@ export function registerCommands(
     );
   });
 
+  bot.command('catatan', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+    await handleManualNotesPromptAction(ctx, deps, user);
+  });
+
   bot.command('riwayat', async (ctx) => {
-    logger.info({ chatId: ctx.chat.id }, 'Perintah /riwayat diterima');
-    await handleRiwayatAction(ctx, deps);
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+    await handleRiwayatAction(ctx, deps, user);
   });
 
   bot.command('tes', async (ctx) => {
-    logger.info({ chatId: ctx.chat.id }, 'Perintah /tes diterima');
-    await handleTesAction(ctx, deps);
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+    await handleTesAction(ctx, deps, user);
   });
 
-  // Handler pesan teks biasa: alur Edit draf & sapaan ("halo", "menu", dll)
+  // Handler pesan teks biasa: Mode Catatan AI, Mode Edit Draf, atau Sapaan Menu
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return;
 
-    const today = getTodayWibDate();
-    const report = await repo.getTodayReport(today);
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
 
+    const today = getTodayWibDate();
+    const report = await repo.getTodayReport(user.id, today);
+
+    // 1. Mode Catatan AI (Tanpa GitHub): kembangkan poin singkat menjadi 3 kolom Monev
+    if (report?.status === 'menunggu_catatan') {
+      const gemini = await getGeminiCredentials(config, repo);
+      if (!gemini) {
+        await ctx.reply('❌ Layanan Gemini AI global belum diatur oleh admin.');
+        return;
+      }
+
+      try {
+        const quota = await repo.consumeAiQuota(
+          user.id,
+          today,
+          config.AI_DAILY_LIMIT,
+        );
+        await repo.updateStatus(user.id, today, 'mengambil_data', {
+          manualNotes: text,
+          sourceMode: 'manual_ai',
+        });
+
+        await ctx.reply('🔄 *Mengembangkan catatan kegiatanmu dengan Gemini AI...*', {
+          parse_mode: 'Markdown',
+        });
+
+        const draft = await summarizeManualNotesWithGemini({
+          apiKey: gemini.apiKey,
+          model: gemini.model,
+          date: today,
+          manualNotes: text,
+        });
+
+        const sent = await ctx.reply(buildDraftMessage(today, draft, quota), {
+          parse_mode: 'Markdown',
+          reply_markup: buildDraftKeyboard(),
+        });
+
+        await repo.saveDraft(user.id, today, {
+          sourceMode: 'manual_ai',
+          manualNotes: text,
+          ...draft,
+          telegramMessageId: sent.message_id,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error({ err: msg, userId: user.id, today }, 'Gagal mengembangkan catatan AI');
+        try {
+          await repo.updateStatus(user.id, today, 'gagal', { error: msg });
+        } catch {
+          // Abaikan jika transisi tidak valid
+        }
+        await ctx.reply(`❌ ${msg}`);
+      }
+      return;
+    }
+
+    // 2. Mode Edit Draf (tidak mengurangi kuota AI)
     if (report?.status === 'menunggu_edit') {
       const existingDraft = {
         aktivitas: report.aktivitas ?? '',
@@ -376,34 +497,38 @@ export function registerCommands(
         return;
       }
 
-      const sent = await ctx.reply(buildDraftMessage(today, validation.data), {
-        parse_mode: 'Markdown',
-        reply_markup: buildDraftKeyboard(),
-      });
+      const quota = await repo.getAiQuotaStatus(
+        user.id,
+        today,
+        config.AI_DAILY_LIMIT,
+      );
+      const sent = await ctx.reply(
+        buildDraftMessage(today, validation.data, quota),
+        {
+          parse_mode: 'Markdown',
+          reply_markup: buildDraftKeyboard(),
+        },
+      );
 
-      await repo.saveDraft(today, {
+      await repo.saveDraft(user.id, today, {
         ...validation.data,
         telegramMessageId: sent.message_id,
       });
       return;
     }
 
-    if (GREETING_REGEX.test(text)) {
-      const schedule = getScheduler().getCurrentSchedule();
-      await ctx.reply(
-        buildGreetingMessage(schedule.time, formatScheduleDays(schedule.days)),
-        {
-          parse_mode: 'Markdown',
-          reply_markup: buildGreetingMenuKeyboard(),
-        },
-      );
-      return;
-    }
-
-    // Untuk pesan teks lain yang tidak dikenal, tampilkan menu cepat
-    const schedule = getScheduler().getCurrentSchedule();
+    // 3. Sapaan / teks umum: tampilkan menu cepat & sisa kuota
+    const quota = await repo.getAiQuotaStatus(
+      user.id,
+      today,
+      config.AI_DAILY_LIMIT,
+    );
     await ctx.reply(
-      buildGreetingMessage(schedule.time, formatScheduleDays(schedule.days)),
+      buildGreetingMessage(
+        user,
+        quota,
+        formatScheduleDays(user.schedule_days),
+      ),
       {
         parse_mode: 'Markdown',
         reply_markup: buildGreetingMenuKeyboard(),

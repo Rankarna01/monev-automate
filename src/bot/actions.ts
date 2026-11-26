@@ -1,19 +1,19 @@
 import type { Context } from 'grammy';
 import { getGeminiCredentials } from '../ai/config.js';
 import type { AppConfig } from '../config.js';
-import type { ReportRepo } from '../db/repo.js';
+import type { ReportRepo, UserRecord } from '../db/repo.js';
 import { formatStatusLabel } from '../db/stateMachine.js';
-import {
-  getGitHubCredentials,
-  getWhitelistedRepos,
-  validateGitHubToken,
-} from '../github/auth.js';
+import { getUserGitHubCredentials, validateGitHubToken } from '../github/auth.js';
 import { listAccessibleRepos } from '../github/commits.js';
 import type { SchedulerService } from '../scheduler/cron.js';
 import { formatScheduleDays } from '../scheduler/scheduleParser.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
-import { buildReminderKeyboard, buildReminderMessage } from './messages.js';
+import {
+  buildReminderKeyboard,
+  buildReminderMessage,
+  buildTutorialMessage,
+} from './messages.js';
 import { buildRepoSelectionKeyboard, setCachedRepos } from './repoKeyboard.js';
 
 export interface BotActionDeps {
@@ -24,28 +24,62 @@ export interface BotActionDeps {
 }
 
 /**
- * Menampilkan status laporan hari ini & koneksi sistem.
+ * Memastikan pengirim terdaftar/diperbarui di tabel `users` dan mengembalikan UserRecord-nya.
  */
-export async function handleStatusAction(ctx: Context, deps: BotActionDeps): Promise<void> {
+export async function resolveCurrentUser(
+  ctx: Context,
+  repo: ReportRepo,
+): Promise<UserRecord | null> {
+  const chatId = ctx.chat?.id;
+  if (!chatId || !ctx.from) return null;
+
+  const fullName = [ctx.from.first_name, ctx.from.last_name]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  const displayName = fullName || ctx.from.username || `User ${chatId}`;
+
+  const { user } = await repo.upsertUser({
+    telegramChatId: chatId,
+    displayName,
+    telegramUsername: ctx.from.username ?? null,
+  });
+
+  return user;
+}
+
+/**
+ * Menampilkan status laporan hari ini, identitas user, koneksi GitHub, & sisa kuota AI.
+ */
+export async function handleStatusAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+): Promise<void> {
   const today = getTodayWibDate();
-  const report = await deps.repo.getTodayReport(today);
-  const schedule = deps.getScheduler().getCurrentSchedule();
-  const creds = await getGitHubCredentials(deps.config, deps.repo);
-  const whitelist = await getWhitelistedRepos(deps.config, deps.repo);
+  const report = await deps.repo.getTodayReport(user.id, today);
+  const creds = getUserGitHubCredentials(deps.config, user);
   const gemini = await getGeminiCredentials(deps.config, deps.repo);
+  const quota = await deps.repo.getAiQuotaStatus(
+    user.id,
+    today,
+    deps.config.AI_DAILY_LIMIT,
+  );
+
   const statusText = report
     ? formatStatusLabel(report.status)
     : 'Belum ada aktivitas hari ini';
 
   const lines = [
-    '📊 *Status Bot & Laporan*',
+    '📊 *Status Akun & Laporan*',
+    `• Nama: *${user.display_name}* (ID: \`${user.telegram_chat_id}\`)`,
     `• Tanggal (WIB): \`${today}\``,
     `• Status laporan: *${statusText}*`,
-    `• Jadwal: *${schedule.time} WIB* (${formatScheduleDays(schedule.days)})`,
-    `• GitHub: ${creds ? `✅ Terhubung (\`${creds.username || 'token aktif'}\`)` : '❌ Belum terhubung (`/github`)'}`,
-    `• Repo whitelist: *${whitelist.length} repo*`,
-    `• Gemini AI: ${gemini ? `✅ Siap (\`${gemini.model}\`)` : '❌ Belum diatur (`/gemini`)'}`,
-    `• Mode Dry Run Monev: \`${deps.config.DRY_RUN ? 'aktif' : 'nonaktif'}\``,
+    `• Jadwal: *${user.schedule_time} WIB* (${formatScheduleDays(user.schedule_days)})`,
+    `• GitHub: ${creds ? `✅ Terhubung (\`${creds.username || 'token aktif'}\`)` : '⚪ Opsional — belum ditautkan (`/github`)'}`,
+    `• Repo whitelist: *${user.whitelisted_repos.length} repo*`,
+    `• Gemini AI Global: ${gemini ? `✅ Siap (\`${gemini.model}\`)` : '❌ Belum diatur admin'}`,
+    `• Sisa kuota AI hari ini: *${quota.remaining}/${quota.limit}* (terpakai ${quota.used})`,
   ];
 
   if (report?.error) {
@@ -56,13 +90,17 @@ export async function handleStatusAction(ctx: Context, deps: BotActionDeps): Pro
 }
 
 /**
- * Menampilkan 7 riwayat laporan terakhir.
+ * Menampilkan 7 riwayat laporan terakhir milik user.
  */
-export async function handleRiwayatAction(ctx: Context, deps: BotActionDeps): Promise<void> {
-  const reports = await deps.repo.getRecentReports(7);
+export async function handleRiwayatAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+): Promise<void> {
+  const reports = await deps.repo.getRecentReports(user.id, 7);
 
   if (reports.length === 0) {
-    await ctx.reply('🗂️ Belum ada riwayat laporan tersimpan di database.');
+    await ctx.reply('🗂️ Belum ada riwayat laporan tersimpan di akunmu.');
     return;
   }
 
@@ -76,11 +114,15 @@ export async function handleRiwayatAction(ctx: Context, deps: BotActionDeps): Pr
 }
 
 /**
- * Mengirim tombol pengingat harian (/tes atau menu Mulai Laporan).
+ * Mengirim tombol pengingat harian (/tes atau menu Buat Laporan).
  */
-export async function handleTesAction(ctx: Context, deps: BotActionDeps): Promise<void> {
+export async function handleTesAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+): Promise<void> {
   const today = getTodayWibDate();
-  const existing = await deps.repo.getTodayReport(today);
+  const existing = await deps.repo.getTodayReport(user.id, today);
 
   if (existing?.status === 'terkirim') {
     await ctx.reply(
@@ -96,7 +138,7 @@ export async function handleTesAction(ctx: Context, deps: BotActionDeps): Promis
       existing.status === 'gagal' ||
       existing.status === 'kedaluwarsa')
   ) {
-    await deps.repo.resetNonSubmittedReport(today);
+    await deps.repo.resetNonSubmittedReport(user.id, today);
   }
 
   const sent = await ctx.reply(buildReminderMessage(today), {
@@ -104,21 +146,84 @@ export async function handleTesAction(ctx: Context, deps: BotActionDeps): Promis
     reply_markup: buildReminderKeyboard(),
   });
 
-  await deps.repo.createOrGetTodayReport(today, sent.message_id);
+  await deps.repo.createOrGetTodayReport(user.id, today, sent.message_id);
 }
 
 /**
- * Menampilkan status akun GitHub dan cara menghubungkan.
+ * Memasuki mode tulis catatan kegiatan harian manual untuk dikembangkan AI.
  */
-export async function handleGitHubStatusAction(ctx: Context, deps: BotActionDeps): Promise<void> {
-  const creds = await getGitHubCredentials(deps.config, deps.repo);
+export async function handleManualNotesPromptAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+): Promise<void> {
+  const today = getTodayWibDate();
+  const quota = await deps.repo.getAiQuotaStatus(
+    user.id,
+    today,
+    deps.config.AI_DAILY_LIMIT,
+  );
+
+  if (quota.remaining <= 0) {
+    await ctx.reply(
+      `⚠️ *Kuota AI harian kamu (${quota.used}/${quota.limit}) sudah habis.*\nKuota akan reset otomatis besok pukul 00:00 WIB.`,
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
+
+  const existing = await deps.repo.getTodayReport(user.id, today);
+  if (existing?.status === 'terkirim') {
+    await ctx.reply(
+      `ℹ️ Laporan tanggal \`${today}\` sudah berstatus *${formatStatusLabel(existing.status)}*.`,
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
+
+  if (
+    existing &&
+    (existing.status === 'dilewati' ||
+      existing.status === 'gagal' ||
+      existing.status === 'kedaluwarsa')
+  ) {
+    await deps.repo.resetNonSubmittedReport(user.id, today);
+  }
+
+  await deps.repo.createOrGetTodayReport(user.id, today, undefined, 'manual_ai');
+  await deps.repo.updateStatus(user.id, today, 'menunggu_catatan', {
+    sourceMode: 'manual_ai',
+  });
+
+  await ctx.reply(
+    [
+      '✍️ *Mode Catatan Kegiatan AI*',
+      `Sisa kuota AI hari ini: *${quota.remaining}/${quota.limit}*`,
+      '',
+      'Silakan ketik dan kirim poin-poin kegiatanmu hari ini (contoh: _"rapat koordinasi tim, memperbaiki tampilan form login, dan melakukan pengujian fitur ekspor data"_).',
+      '',
+      'AI akan mengembangkannya menjadi 3 kolom format baku Monev (≥ 100 karakter).',
+    ].join('\n'),
+    { parse_mode: 'Markdown' },
+  );
+}
+
+/**
+ * Menampilkan status akun GitHub milik user dan cara menghubungkan.
+ */
+export async function handleGitHubStatusAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+): Promise<void> {
+  const creds = getUserGitHubCredentials(deps.config, user);
   if (creds) {
     try {
       const info = await validateGitHubToken(creds.token);
       await ctx.reply(
         [
           '🐙 *Status Akun GitHub*',
-          `• Status: ✅ *Terhubung*`,
+          '• Status: ✅ *Terhubung*',
           `• Username: \`${info.login}\`${info.name ? ` (${info.name})` : ''}`,
           '',
           'Gunakan `/repo` untuk memilih repository whitelist.',
@@ -138,26 +243,32 @@ export async function handleGitHubStatusAction(ctx: Context, deps: BotActionDeps
 
   await ctx.reply(
     [
-      '🐙 *Akun GitHub belum terhubung*',
+      '🐙 *Akun GitHub belum ditautkan (Opsional)*',
       '',
-      'Cara menghubungkan:',
+      'Jika ingin menarik commit otomatis:',
       '1. *Login via Browser (OAuth Device Flow — bisa pakai akun Google GitHub):*',
-      '   Kirim `/github login` (butuh `GITHUB_CLIENT_ID` di `.env`)',
-      '2. *Pakai Fine-grained PAT (langsung tanpa OAuth App):*',
+      '   Kirim `/github login`',
+      '2. *Pakai Fine-grained PAT (Read-only Contents & Metadata):*',
       '   Kirim `/github token <PAT_KAMU>`',
+      '',
+      '💡 *Tidak punya / tidak pakai GitHub?* Kamu tetap bisa klik *✍️ Catatan AI* untuk membuat laporan dari poin kegiatan.',
     ].join('\n'),
     { parse_mode: 'Markdown' },
   );
 }
 
 /**
- * Menampilkan keyboard interaktif pemilih repository GitHub.
+ * Menampilkan keyboard interaktif pemilih repository GitHub milik user.
  */
-export async function handleRepoListAction(ctx: Context, deps: BotActionDeps): Promise<void> {
-  const creds = await getGitHubCredentials(deps.config, deps.repo);
+export async function handleRepoListAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+): Promise<void> {
+  const creds = getUserGitHubCredentials(deps.config, user);
   if (!creds) {
     await ctx.reply(
-      '❌ Akun GitHub belum terhubung. Kirim `/github` terlebih dahulu.',
+      '❌ Akun GitHub belum terhubung. Kirim `/github` terlebih dahulu (atau pakai *✍️ Catatan AI* tanpa GitHub).',
       { parse_mode: 'Markdown' },
     );
     return;
@@ -170,16 +281,15 @@ export async function handleRepoListAction(ctx: Context, deps: BotActionDeps): P
       return;
     }
 
-    setCachedRepos(accessible);
-    const whitelisted = await getWhitelistedRepos(deps.config, deps.repo);
+    setCachedRepos(user.telegram_chat_id, accessible);
     const { keyboard, totalPages, currentPage } = buildRepoSelectionKeyboard(
       accessible,
-      whitelisted,
+      user.whitelisted_repos,
       0,
     );
 
     await ctx.reply(
-      `📚 *Pilih Repository Whitelist* (Halaman ${currentPage + 1}/${totalPages})\nAktif saat ini: *${whitelisted.length} repo*\n\nKlik tombol untuk mengaktifkan/menonaktifkan:`,
+      `📚 *Pilih Repository Whitelist* (Halaman ${currentPage + 1}/${totalPages})\nAktif saat ini: *${user.whitelisted_repos.length} repo*\n\nKlik tombol untuk mengaktifkan/menonaktifkan:`,
       {
         parse_mode: 'Markdown',
         reply_markup: keyboard,
@@ -192,36 +302,38 @@ export async function handleRepoListAction(ctx: Context, deps: BotActionDeps): P
 }
 
 /**
- * Menampilkan status konfigurasi Gemini AI dan cara mengaturnya.
+ * Menampilkan status Gemini AI Global dan sisa kuota harian user.
  */
-export async function handleGeminiStatusAction(ctx: Context, deps: BotActionDeps): Promise<void> {
+export async function handleGeminiStatusAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+): Promise<void> {
+  const today = getTodayWibDate();
   const gemini = await getGeminiCredentials(deps.config, deps.repo);
-
-  if (gemini) {
-    await ctx.reply(
-      [
-        '🧠 *Status Gemini AI*',
-        '• Status: ✅ *Siap digunakan*',
-        `• Model aktif: \`${gemini.model}\``,
-        '',
-        'Perintah pengaturan:',
-        '• `/gemini key <API_KEY>` — Ganti API key',
-        '• `/gemini model <NAMA_MODEL>` — Ganti model (mis. `gemini-3.8-flash`)',
-        '• `/gemini hapus` — Hapus API key dinamis dari database',
-      ].join('\n'),
-      { parse_mode: 'Markdown' },
-    );
-    return;
-  }
+  const quota = await deps.repo.getAiQuotaStatus(
+    user.id,
+    today,
+    deps.config.AI_DAILY_LIMIT,
+  );
 
   await ctx.reply(
     [
-      '🧠 *Gemini API Key belum diatur*',
-      '',
-      'Cara mengatur langsung dari Telegram:',
-      '1. Buat API key di Google AI Studio (`aistudio.google.com/apikey`)',
-      '2. Kirim `/gemini key <API_KEY_KAMU>` ke bot ini',
+      '🧠 *Status Gemini AI & Kuota Harian*',
+      `• Layanan AI Global: ${gemini ? `✅ *Aktif* (\`${gemini.model}\`)` : '❌ Belum diatur admin'}`,
+      `• Kuota harian kamu: *${quota.remaining}/${quota.limit} tersisa* (terpakai ${quota.used})`,
+      '• Reset kuota: Setiap hari pukul *00:00 WIB*',
     ].join('\n'),
     { parse_mode: 'Markdown' },
   );
+}
+
+/**
+ * Menampilkan panduan lengkap penggunaan bot.
+ */
+export async function handleTutorialAction(
+  ctx: Context,
+  user: UserRecord,
+): Promise<void> {
+  await ctx.reply(buildTutorialMessage(user), { parse_mode: 'Markdown' });
 }

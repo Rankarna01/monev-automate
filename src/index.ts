@@ -4,7 +4,6 @@ import { initDatabase } from './db/db.js';
 import { createReportRepo } from './db/repo.js';
 import { createScheduler, type SchedulerService } from './scheduler/cron.js';
 import { createLogger } from './utils/logger.js';
-import { getTodayWibDate } from './utils/time.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -12,20 +11,6 @@ async function main(): Promise<void> {
 
   const db = await initDatabase(config, logger);
   const repo = createReportRepo(db.client);
-
-  // Pemulihan state saat bot restart
-  const today = getTodayWibDate();
-  const recovered = await repo.getTodayReport(today);
-  if (recovered) {
-    logger.info(
-      {
-        date: recovered.date,
-        status: recovered.status,
-        telegramMessageId: recovered.telegram_message_id,
-      },
-      'State laporan hari ini berhasil dipulihkan dari MySQL',
-    );
-  }
 
   let scheduler: SchedulerService;
   const bot = createBot(config, logger, repo, () => scheduler);
@@ -47,10 +32,10 @@ async function main(): Promise<void> {
   logger.info(
     {
       tz: config.TZ,
-      scheduleTime: scheduler.getCurrentSchedule().time,
-      dryRun: config.DRY_RUN,
+      scheduleTime: config.SCHEDULE_TIME,
+      aiDailyLimit: config.AI_DAILY_LIMIT,
     },
-    'Menjalankan bot Telegram (long polling)...',
+    'Menjalankan bot Telegram multi-user (long polling)...',
   );
 
   await bot.start({

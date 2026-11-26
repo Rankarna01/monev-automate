@@ -26,25 +26,9 @@ export default async function handler(
   const bot = createBot(config, logger, repo, () => scheduler);
   scheduler = createScheduler(bot, config, logger, repo);
 
-  if (scheduler.loadOnly) {
-    await scheduler.loadOnly();
-  }
-
-  // Cek apakah hari ini termasuk hari aktif (WIB)
-  const wibDate = new Date(
-    new Date().toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }),
-  );
-  const currentSchedule = scheduler.getCurrentSchedule();
-  if (!currentSchedule.days.includes(wibDate.getDay())) {
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ ok: true, skipped: 'not_active_day' }));
-    return;
-  }
-
-  await scheduler.triggerDailyReminder('cron');
+  const sentCount = await scheduler.triggerDailyReminder('cron');
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify({ ok: true, triggered: true }));
+  res.end(JSON.stringify({ ok: true, triggered: true, sentCount }));
 }

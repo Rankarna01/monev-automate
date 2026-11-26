@@ -8,7 +8,7 @@ export interface DatabaseConnection {
 }
 
 /**
- * Menginisialisasi koneksi Supabase dan memverifikasi tabel `settings` serta `reports` sudah dibuat.
+ * Menginisialisasi koneksi Supabase dan memverifikasi tabel `settings`, `users`, serta `reports`.
  */
 export async function initDatabase(
   config: AppConfig,
@@ -28,35 +28,19 @@ export async function initDatabase(
     },
   );
 
-  // Verifikasi tabel sudah dibuat lewat supabase/schema.sql
-  const { error: settingsError } = await client
-    .from('settings')
-    .select('key_name')
-    .limit(1);
-
-  if (settingsError) {
-    throw new Error(
-      `Tabel Supabase belum siap (${settingsError.message}). Jalankan isi file supabase/schema.sql di Supabase SQL Editor terlebih dahulu.`,
-    );
-  }
-
-  const { error: reportsError } = await client
-    .from('reports')
-    .select('id')
-    .limit(1);
-
-  if (reportsError) {
-    throw new Error(
-      `Tabel reports Supabase belum siap (${reportsError.message}). Jalankan isi file supabase/schema.sql di Supabase SQL Editor terlebih dahulu.`,
-    );
+  for (const table of ['settings', 'users', 'reports'] as const) {
+    const { error } = await client.from(table).select('*').limit(1);
+    if (error) {
+      throw new Error(
+        `Tabel "${table}" di Supabase belum siap (${error.message}). Jalankan isi file supabase/schema.sql di Supabase SQL Editor terlebih dahulu.`,
+      );
+    }
   }
 
   logger.info({ supabaseUrl: config.SUPABASE_URL }, 'Database Supabase terhubung');
 
   return {
     client,
-    close: async () => {
-      // Supabase client berbasis HTTP stateless, tidak perlu menutup pool koneksi
-    },
+    close: async () => {},
   };
 }

@@ -1,9 +1,11 @@
 import { InlineKeyboard } from 'grammy';
+import type { AiQuotaStatus, UserRecord } from '../db/repo.js';
 import { formatWibDateTime } from '../utils/time.js';
 import type { ReportDraft } from '../utils/validate.js';
 
 export const CALLBACK_ACTIONS = {
   SUMMARIZE: 'action:summarize',
+  MANUAL_AI: 'action:manual_ai',
   SKIP: 'action:skip',
   SNOOZE_30M: 'action:snooze_30m',
 } as const;
@@ -18,11 +20,13 @@ export const DRAFT_ACTIONS = {
 export const MENU_ACTIONS = {
   STATUS: 'menu:status',
   TES: 'menu:tes',
+  MANUAL_AI: 'menu:manual_ai',
   GITHUB: 'menu:github',
   REPO: 'menu:repo',
   GEMINI: 'menu:gemini',
   RIWAYAT: 'menu:riwayat',
   SCHEDULE: 'menu:schedule',
+  TUTORIAL: 'menu:tutorial',
 } as const;
 
 /**
@@ -30,27 +34,29 @@ export const MENU_ACTIONS = {
  */
 export function buildReminderKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('📥 Buat Ringkasan', CALLBACK_ACTIONS.SUMMARIZE)
-    .text('⏭️ Lewati', CALLBACK_ACTIONS.SKIP)
+    .text('📥 Dari GitHub', CALLBACK_ACTIONS.SUMMARIZE)
+    .text('✍️ Catatan AI', CALLBACK_ACTIONS.MANUAL_AI)
     .row()
+    .text('⏭️ Lewati', CALLBACK_ACTIONS.SKIP)
     .text('⏰ Ingatkan 30 menit', CALLBACK_ACTIONS.SNOOZE_30M);
 }
 
 /**
- * Membuat inline keyboard menu utama saat user menyapa ("halo", "menu", dll).
+ * Membuat inline keyboard menu utama saat user menyapa ("halo", "/start", dll).
  */
 export function buildGreetingMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('📊 Status Hari Ini', MENU_ACTIONS.STATUS)
-    .text('📋 Mulai / Tes Laporan', MENU_ACTIONS.TES)
+    .text('📊 Status & Kuota', MENU_ACTIONS.STATUS)
+    .text('📋 Buat Laporan', MENU_ACTIONS.TES)
     .row()
+    .text('✍️ Catatan AI', MENU_ACTIONS.MANUAL_AI)
     .text('🐙 Akun GitHub', MENU_ACTIONS.GITHUB)
+    .row()
     .text('📚 Pilih Repo', MENU_ACTIONS.REPO)
+    .text('🕒 Ubah Jam & Jadwal', MENU_ACTIONS.SCHEDULE)
     .row()
-    .text('🧠 Gemini AI', MENU_ACTIONS.GEMINI)
     .text('🗂️ Riwayat Laporan', MENU_ACTIONS.RIWAYAT)
-    .row()
-    .text('🕒 Ubah Jam & Jadwal', MENU_ACTIONS.SCHEDULE);
+    .text('📖 Tutorial', MENU_ACTIONS.TUTORIAL);
 }
 
 const SCHEDULE_TIME_OPTIONS = [
@@ -83,7 +89,7 @@ export function buildScheduleKeyboard(activeTime: string): InlineKeyboard {
  */
 export function buildDraftKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('✅ Setujui & Kirim', DRAFT_ACTIONS.APPROVE)
+    .text('✅ Setujui & Simpan', DRAFT_ACTIONS.APPROVE)
     .text('✏️ Edit', DRAFT_ACTIONS.EDIT)
     .row()
     .text('🔄 Buat Ulang', DRAFT_ACTIONS.REGENERATE)
@@ -91,38 +97,70 @@ export function buildDraftKeyboard(): InlineKeyboard {
 }
 
 /**
- * Pesan sambutan untuk perintah /start.
+ * Pesan sambutan & onboarding dinamis untuk /start (melampirkan Nama, Telegram ID, Kuota AI, dan Tutorial singkat).
  */
-export function buildStartMessage(scheduleTime: string, scheduleDaysLabel?: string): string {
-  const daysPart = scheduleDaysLabel ? ` (${scheduleDaysLabel})` : '';
+export function buildOnboardingStartMessage(
+  user: UserRecord,
+  quota: AiQuotaStatus,
+  scheduleDaysLabel: string,
+): string {
+  const usernameText = user.telegram_username ? ` (@${user.telegram_username})` : '';
   return [
-    '👋 *Bot Laporan Harian Monev aktif!*',
+    '👋 *Selamat datang di Bot Laporan Harian Monev!*',
     '',
-    `🕒 Jadwal pengingat harian: *${scheduleTime} WIB*${daysPart}`,
-    `📅 Waktu server saat ini: ${formatWibDateTime()}`,
+    '🪪 *Identitas Terdaftar (Otomatis Tersimpan):*',
+    `• Nama: *${user.display_name}*${usernameText}`,
+    `• Telegram ID: \`${user.telegram_chat_id}\``,
+    `• Jadwal pengingat: *${user.schedule_time} WIB* (${scheduleDaysLabel})`,
+    `• Sisa kuota AI hari ini: *${quota.remaining}/${quota.limit}*`,
+    `• Waktu server: ${formatWibDateTime()}`,
     '',
-    'Perintah yang tersedia:',
-    '• `/start` — Cek status bot hidup',
-    '• `/status` — Cek status laporan hari ini',
-    '• `/jam <HH:MM>` — Ubah jam pengingat harian',
-    '• `/hari <hari>` — Atur hari aktif (mis. `senin-jumat`)',
-    '• `/github` — Hubungkan / cek akun GitHub',
-    '• `/repo` — Pilih repo whitelist lewat tombol',
-    '• `/gemini` — Atur API Key & model Gemini',
-    '• `/riwayat` — Lihat 7 laporan terakhir',
-    '• `/tes` — Uji coba kirim tombol pengingat harian',
+    '📘 *Cara Pakai (Pilih Salah Satu atau Keduanya):*',
+    '1. *Pakai GitHub:* Klik *🐙 Akun GitHub* → tautkan token/OAuth → pilih repo di *📚 Pilih Repo* → bot otomatis merangkum commit-mu.',
+    '2. *Tanpa GitHub (Mode Catatan AI):* Klik *✍️ Catatan AI* → ketik poin singkat kegiatanmu hari ini → AI langsung mengembangkannya menjadi 3 kolom baku Monev (≥ 100 karakter).',
+    '3. *Atur Jam Pengingat:* Klik *🕒 Ubah Jam & Jadwal* untuk memilih jam 14:00–17:00 WIB.',
     '',
-    '💡 *Tips:* Kirim `halo` kapan saja untuk membuka menu tombol cepat.',
+    'Pilih menu di bawah ini untuk mulai 👇',
+  ].join('\n');
+}
+
+/**
+ * Panduan lengkap cara menyimpan & menggunakan fitur bot secara dinamis.
+ */
+export function buildTutorialMessage(user: UserRecord): string {
+  return [
+    '📖 *Tutorial & Panduan Dinamis Bot Monev*',
+    `Akun: *${user.display_name}* (ID: \`${user.telegram_chat_id}\`)`,
+    '',
+    '1️⃣ *Simpan / Tautkan Akun GitHub (Opsional)*',
+    '• Tidak wajib jika kamu ingin pakai Mode Catatan AI saja.',
+    '• Jika ingin otomatis tarik commit: buat Fine-grained PAT (Read-only `Contents` & `Metadata`) di GitHub → kirim `/github token <PAT>` (atau `/github login` jika OAuth aktif).',
+    '• Setelah terhubung, klik *📚 Pilih Repo* untuk memilih repo lewat tombol.',
+    '',
+    '2️⃣ *Buat Laporan Tanpa GitHub (Mode Catatan AI)*',
+    '• Klik tombol *✍️ Catatan AI* → kirim kalimat singkat, contoh:',
+    '  _"Ikut rapat sprint pagi, merapikan tampilan tabel karyawan, dan membantu uji coba API absensi."_',
+    '• AI akan menyusun 3 kolom format Monev (Uraian aktivitas, Pembelajaran, Kendala) masing-masing ≥ 100 karakter.',
+    '',
+    '3️⃣ *Ubah Jadwal & Hari Aktif*',
+    '• Klik *🕒 Ubah Jam & Jadwal* untuk pilih jam 14:00–17:00 WIB, atau kirim `/hari senin-jumat`.',
+    '',
+    '4️⃣ *Review & Salin ke Monev*',
+    '• Gunakan tombol *✏️ Edit* atau *🔄 Buat Ulang* jika draf belum pas, lalu salin ke halaman Monev-mu.',
   ].join('\n');
 }
 
 /**
  * Pesan sapaan ramah beserta menu fungsi cepat.
  */
-export function buildGreetingMessage(scheduleTime: string, scheduleDaysLabel: string): string {
+export function buildGreetingMessage(
+  user: UserRecord,
+  quota: AiQuotaStatus,
+  scheduleDaysLabel: string,
+): string {
   return [
-    '👋 *Halo! Ada yang bisa dibantu hari ini?*',
-    `🕒 Jadwal laporan aktif: *${scheduleTime} WIB* (${scheduleDaysLabel})`,
+    `👋 *Halo, ${user.display_name}!*`,
+    `🕒 Jadwal: *${user.schedule_time} WIB* (${scheduleDaysLabel}) | 🧠 Kuota AI: *${quota.remaining}/${quota.limit}*`,
     '',
     'Pilih fungsi di bawah ini:',
   ].join('\n');
@@ -136,15 +174,19 @@ export function buildReminderMessage(todayDate: string): string {
     '📋 *Waktunya laporan harian Monev*',
     `Tanggal: \`${todayDate}\``,
     '',
-    'Silakan pilih aksi di bawah ini:',
+    'Pilih sumber pembuatan laporan hari ini:',
   ].join('\n');
 }
 
 /**
  * Memformat draf 3 field laporan untuk ditinjau di Telegram.
  */
-export function buildDraftMessage(date: string, draft: ReportDraft): string {
-  return [
+export function buildDraftMessage(
+  date: string,
+  draft: ReportDraft,
+  quota?: AiQuotaStatus,
+): string {
+  const lines = [
     `📝 *Draf Laporan Harian (\`${date}\`)*`,
     '',
     `📌 *Uraian Aktivitas* (${draft.aktivitas.length} karakter):`,
@@ -155,9 +197,14 @@ export function buildDraftMessage(date: string, draft: ReportDraft): string {
     '',
     `⚠️ *Kendala yang Dialami* (${draft.kendala.length} karakter):`,
     draft.kendala,
-    '',
-    'Silakan tinjau draf di atas sebelum dikirim ke Monev:',
-  ].join('\n');
+  ];
+
+  if (quota) {
+    lines.push('', `🧠 _Sisa kuota AI hari ini: ${quota.remaining}/${quota.limit}_`);
+  }
+
+  lines.push('', 'Silakan tinjau draf di atas:');
+  return lines.join('\n');
 }
 
 /**

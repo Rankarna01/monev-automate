@@ -7,7 +7,7 @@ import { registerCallbacks } from './callbacks.js';
 import { registerCommands } from './commands.js';
 
 /**
- * Menginisialisasi bot grammY dengan guard chat_id pemilik, perintah, dan callback.
+ * Menginisialisasi bot grammY dalam mode multi-user langsung via Telegram.
  */
 export function createBot(
   config: AppConfig,
@@ -17,21 +17,11 @@ export function createBot(
 ): Bot {
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
 
-  // Guard keamanan: hanya chat_id pemilik yang diizinkan mengakses bot
+  // Hanya memproses chat pribadi (atau update yang memiliki chat_id & pengirim valid)
   bot.use(async (ctx, next) => {
-    const incomingChatId = ctx.chat?.id;
-    if (incomingChatId !== config.TELEGRAM_CHAT_ID) {
-      logger.warn(
-        {
-          incomingChatId,
-          fromId: ctx.from?.id,
-          username: ctx.from?.username,
-        },
-        'Akses ditolak: chat_id tidak cocok dengan pemilik',
-      );
+    if (!ctx.chat?.id || !ctx.from || ctx.from.is_bot) {
       return;
     }
-
     await next();
   });
 
@@ -39,7 +29,10 @@ export function createBot(
   registerCallbacks(bot, config, logger, repo, getScheduler);
 
   bot.catch((err) => {
-    logger.error({ err: err.error, updateId: err.ctx.update.update_id }, 'Error pada bot Telegram');
+    logger.error(
+      { err: err.error, updateId: err.ctx.update.update_id },
+      'Error pada bot Telegram',
+    );
   });
 
   return bot;

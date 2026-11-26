@@ -1,10 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import type { AppConfig } from '../config.js';
-import type { ReportRepo } from '../db/repo.js';
-
-const SETTING_GITHUB_TOKEN = 'github_token';
-const SETTING_GITHUB_USERNAME = 'github_username';
-const SETTING_GITHUB_REPOS = 'github_repos';
+import type { ReportRepo, UserRecord } from '../db/repo.js';
+import { decryptSecret, encryptSecret } from '../utils/crypto.js';
 
 export interface GitHubCredentials {
   token: string;
@@ -19,44 +16,54 @@ export interface DeviceCodeResponse {
   interval: number;
 }
 
+function getEncryptionSecret(config: AppConfig): string {
+  return config.ENCRYPTION_KEY || config.TELEGRAM_BOT_TOKEN;
+}
+
 /**
- * Mengambil token & username GitHub dari MySQL (prioritas) atau fallback ke .env.
+ * Mengambil token & username GitHub milik user tertentu (didekripsi dari tabel `users`).
  */
-export async function getGitHubCredentials(
+export function getUserGitHubCredentials(
   config: AppConfig,
-  repo: ReportRepo,
-): Promise<GitHubCredentials | null> {
-  const dbToken = await repo.getSetting(SETTING_GITHUB_TOKEN);
-  const dbUsername = await repo.getSetting(SETTING_GITHUB_USERNAME);
+  user: UserRecord,
+): GitHubCredentials | null {
+  if (!user.github_token_enc) {
+    return null;
+  }
 
-  const token = dbToken || config.GITHUB_TOKEN;
-  const username = dbUsername || config.GITHUB_USERNAME;
-
+  const token = decryptSecret(user.github_token_enc, getEncryptionSecret(config));
   if (!token) {
     return null;
   }
 
-  return { token, username };
+  return {
+    token,
+    username: user.github_username ?? '',
+  };
 }
 
 /**
- * Menyimpan token & username GitHub secara dinamis ke MySQL.
+ * Menyimpan token (terenkripsi) & username GitHub milik user ke tabel `users`.
  */
-export async function saveGitHubCredentials(
+export async function saveUserGitHubCredentials(
+  config: AppConfig,
   repo: ReportRepo,
+  userId: number,
   token: string,
   username: string,
-): Promise<void> {
-  await repo.setSetting(SETTING_GITHUB_TOKEN, token);
-  await repo.setSetting(SETTING_GITHUB_USERNAME, username);
+): Promise<UserRecord> {
+  const tokenEnc = encryptSecret(token, getEncryptionSecret(config));
+  return repo.updateUserGitHub(userId, { tokenEnc, username });
 }
 
 /**
- * Menghapus kredensial GitHub yang tersimpan di MySQL.
+ * Menghapus kredensial GitHub milik user dari tabel `users`.
  */
-export async function clearGitHubCredentials(repo: ReportRepo): Promise<void> {
-  await repo.setSetting(SETTING_GITHUB_TOKEN, '');
-  await repo.setSetting(SETTING_GITHUB_USERNAME, '');
+export async function clearUserGitHubCredentials(
+  repo: ReportRepo,
+  userId: number,
+): Promise<UserRecord> {
+  return repo.updateUserGitHub(userId, { tokenEnc: null, username: null });
 }
 
 /**
@@ -71,54 +78,23 @@ export async function validateGitHubToken(
 }
 
 /**
- * Mengambil daftar repo whitelist dari MySQL (fallback ke GITHUB_REPOS di .env).
+ * Menambah atau menghapus satu repo dari whitelist milik user (toggle).
  */
-export async function getWhitelistedRepos(
-  config: AppConfig,
+export async function toggleUserWhitelistedRepo(
   repo: ReportRepo,
-): Promise<string[]> {
-  const raw = await repo.getSetting(SETTING_GITHUB_REPOS);
-  if (raw !== null) {
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
-        return parsed;
-      }
-    } catch {
-      // Abaikan jika format JSON korup, fallback ke .env
-    }
-  }
-  return [...config.GITHUB_REPOS];
-}
-
-/**
- * Menyimpan daftar repo whitelist ke MySQL.
- */
-export async function saveWhitelistedRepos(
-  repo: ReportRepo,
-  repos: string[],
-): Promise<string[]> {
-  const normalized = Array.from(new Set(repos.map((r) => r.trim()).filter(Boolean)));
-  await repo.setSetting(SETTING_GITHUB_REPOS, JSON.stringify(normalized));
-  return normalized;
-}
-
-/**
- * Menambah atau menghapus satu repo dari whitelist (toggle).
- */
-export async function toggleWhitelistedRepo(
-  config: AppConfig,
-  repo: ReportRepo,
+  user: UserRecord,
   fullName: string,
 ): Promise<{ repos: string[]; added: boolean }> {
-  const current = await getWhitelistedRepos(config, repo);
+  const current = Array.isArray(user.whitelisted_repos)
+    ? user.whitelisted_repos
+    : [];
   const exists = current.includes(fullName);
   const next = exists
     ? current.filter((item) => item !== fullName)
     : [...current, fullName];
 
-  const saved = await saveWhitelistedRepos(repo, next);
-  return { repos: saved, added: !exists };
+  const updated = await repo.updateUserRepos(user.id, next);
+  return { repos: updated.whitelisted_repos, added: !exists };
 }
 
 /**

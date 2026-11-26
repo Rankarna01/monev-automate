@@ -4,16 +4,17 @@ import type { AccessibleRepo } from '../github/commits.js';
 const PAGE_SIZE = 8;
 
 /**
- * Cache sementara daftar repo GitHub untuk menjaga panjang callback_data Telegram (maks 64 byte).
+ * Cache sementara daftar repo GitHub per telegram_chat_id agar aman untuk multi-user
+ * dan menjaga panjang callback_data Telegram (maks 64 byte).
  */
-let cachedRepos: AccessibleRepo[] = [];
+const cachedReposByChat = new Map<number, AccessibleRepo[]>();
 
-export function setCachedRepos(repos: AccessibleRepo[]): void {
-  cachedRepos = repos;
+export function setCachedRepos(chatId: number, repos: AccessibleRepo[]): void {
+  cachedReposByChat.set(chatId, repos);
 }
 
-export function getCachedRepos(): AccessibleRepo[] {
-  return cachedRepos;
+export function getCachedRepos(chatId: number): AccessibleRepo[] {
+  return cachedReposByChat.get(chatId) ?? [];
 }
 
 /**
@@ -37,7 +38,9 @@ export function buildRepoSelectionKeyboard(
     const isActive = whitelistSet.has(item.fullName);
     const prefix = isActive ? '✅' : '⬜';
     const lock = item.isPrivate ? ' 🔒' : '';
-    keyboard.text(`${prefix} ${item.fullName}${lock}`, `repo_tg:${globalIdx}:${currentPage}`).row();
+    keyboard
+      .text(`${prefix} ${item.fullName}${lock}`, `repo_tg:${globalIdx}:${currentPage}`)
+      .row();
   });
 
   if (totalPages > 1) {
