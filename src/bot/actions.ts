@@ -483,11 +483,18 @@ export async function processMediaToDraft(
     return;
   }
 
-  const quota = await deps.repo.consumeAiQuota(
+  const preQuota = await deps.repo.getAiQuotaStatus(
     user.id,
     today,
     deps.config.AI_DAILY_LIMIT,
   );
+  if (preQuota.remaining <= 0) {
+    await ctx.reply(
+      `⚠️ *Kuota AI harian kamu (${preQuota.used}/${preQuota.limit}) sudah habis.*\nKuota akan reset otomatis besok pukul 00:00 WIB.`,
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
 
   const encodedRef = encodeMediaRef(media);
   await deps.repo.updateStatus(user.id, today, 'mengambil_data', {
@@ -517,6 +524,12 @@ export async function processMediaToDraft(
     base64Data,
     caption: media.caption,
   });
+
+  const quota = await deps.repo.consumeAiQuota(
+    user.id,
+    today,
+    deps.config.AI_DAILY_LIMIT,
+  );
 
   const sent = await ctx.reply(buildDraftMessage(today, draft, quota), {
     parse_mode: 'Markdown',

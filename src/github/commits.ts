@@ -120,26 +120,31 @@ export async function fetchTodayCommits(options: {
 
       perRepoCount[fullName] = commitList.length;
 
-      for (const item of commitList) {
-        const { data: detail } = await octokit.repos.getCommit({
-          owner,
-          repo,
-          ref: item.sha,
-        });
+      // Ambil detail file secara paralel (maks 15 commit terbaru per repo agar cepat di serverless)
+      const targetCommits = commitList.slice(0, 15);
+      const details = await Promise.all(
+        targetCommits.map(async (item) => {
+          const { data: detail } = await octokit.repos.getCommit({
+            owner,
+            repo,
+            ref: item.sha,
+          });
+          const committedAt =
+            item.commit.author?.date ??
+            item.commit.committer?.date ??
+            new Date().toISOString();
 
-        const committedAt =
-          item.commit.author?.date ??
-          item.commit.committer?.date ??
-          new Date().toISOString();
+          return {
+            repo: fullName,
+            sha: item.sha.slice(0, 7),
+            message: item.commit.message.trim(),
+            committedAt,
+            files: (detail.files ?? []).map((f) => f.filename),
+          };
+        }),
+      );
 
-        allCommits.push({
-          repo: fullName,
-          sha: item.sha.slice(0, 7),
-          message: item.commit.message.trim(),
-          committedAt,
-          files: (detail.files ?? []).map((f) => f.filename),
-        });
-      }
+      allCommits.push(...details);
     } catch (error) {
       throw mapGitHubError(error, fullName);
     }

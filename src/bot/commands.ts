@@ -424,11 +424,19 @@ export function registerCommands(
       }
 
       try {
-        const quota = await repo.consumeAiQuota(
+        const preQuota = await repo.getAiQuotaStatus(
           user.id,
           today,
           config.AI_DAILY_LIMIT,
         );
+        if (preQuota.remaining <= 0) {
+          await ctx.reply(
+            `⚠️ *Kuota AI harian kamu (${preQuota.used}/${preQuota.limit}) sudah habis.*\nKuota akan reset otomatis besok pukul 00:00 WIB.`,
+            { parse_mode: 'Markdown' },
+          );
+          return;
+        }
+
         await repo.updateStatus(user.id, today, 'mengambil_data', {
           manualNotes: text,
           sourceMode: 'manual_ai',
@@ -444,6 +452,12 @@ export function registerCommands(
           date: today,
           manualNotes: text,
         });
+
+        const quota = await repo.consumeAiQuota(
+          user.id,
+          today,
+          config.AI_DAILY_LIMIT,
+        );
 
         const sent = await ctx.reply(buildDraftMessage(today, draft, quota), {
           parse_mode: 'Markdown',

@@ -253,13 +253,20 @@ export function registerCallbacks(
       return;
     }
 
-    try {
-      const quota = await repo.consumeAiQuota(
-        user.id,
-        today,
-        config.AI_DAILY_LIMIT,
+    const preQuota = await repo.getAiQuotaStatus(
+      user.id,
+      today,
+      config.AI_DAILY_LIMIT,
+    );
+    if (preQuota.remaining <= 0) {
+      await ctx.reply(
+        `⚠️ *Kuota AI harian kamu (${preQuota.used}/${preQuota.limit}) sudah habis.*\nKuota akan reset otomatis besok pukul 00:00 WIB.`,
+        { parse_mode: 'Markdown' },
       );
+      return;
+    }
 
+    try {
       await repo.createOrGetTodayReport(
         user.id,
         today,
@@ -284,7 +291,7 @@ export function registerCallbacks(
       if (result.commits.length === 0) {
         await repo.updateStatus(user.id, today, 'dilewati');
         await ctx.reply(
-          `ℹ️ *Tidak ada commit hari ini (\`${today}\`)* pada repo whitelist.\nJika ada kegiatan non-coding, kamu bisa klik *✍️ Catatan AI* di menu \`halo\`.`,
+          `ℹ️ *Tidak ada commit hari ini (\`${today}\`)* pada repo whitelist.\nJika ada kegiatan non-coding, kamu bisa klik *✍️ Catatan Teks* atau *📷 Dari Foto* di menu \`halo\`.`,
           { parse_mode: 'Markdown' },
         );
         return;
@@ -299,6 +306,13 @@ export function registerCallbacks(
         date: today,
         commits: result.commits,
       });
+
+      // Potong kuota hanya setelah ringkasan AI berhasil dibuat
+      const quota = await repo.consumeAiQuota(
+        user.id,
+        today,
+        config.AI_DAILY_LIMIT,
+      );
 
       const sentDraft = await ctx.reply(buildDraftMessage(today, draft, quota), {
         parse_mode: 'Markdown',
