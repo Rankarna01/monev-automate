@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { assertValidTransition, type ReportStatus } from './stateMachine.js';
 
-export type SourceMode = 'github' | 'manual_ai' | 'hybrid';
+export type SourceMode = 'github' | 'manual_ai' | 'photo_ai' | 'voice_ai' | 'hybrid';
 
 export interface UserRecord {
   id: number;

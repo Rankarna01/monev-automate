@@ -1,9 +1,11 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, type ContentListUnion } from '@google/genai';
 import type { CommitSummaryItem } from '../github/commits.js';
 import { validateDraft, type ReportDraft } from '../utils/validate.js';
 import {
   buildCommitsPromptInput,
   buildManualNotesPromptInput,
+  buildPhotoPromptInput,
+  buildVoicePromptInput,
   SYSTEM_PROMPT,
 } from './prompt.js';
 
@@ -30,6 +32,16 @@ export interface SummarizeNotesOptions {
   commits?: CommitSummaryItem[];
 }
 
+export interface SummarizeMediaOptions {
+  apiKey: string;
+  model: string;
+  date: string;
+  mode: 'photo_ai' | 'voice_ai';
+  mimeType: string;
+  base64Data: string;
+  caption?: string;
+}
+
 /**
  * Membersihkan kemungkinan pembungkus markdown ```json ... ``` pada output teks LLM.
  */
@@ -54,7 +66,7 @@ function isTransientOrUnavailableError(error: unknown): boolean {
 async function generateWithFallback(
   ai: GoogleGenAI,
   primaryModel: string,
-  promptInput: string,
+  contents: ContentListUnion,
 ): Promise<string> {
   const modelsToTry = Array.from(new Set([primaryModel, ...FALLBACK_MODELS]));
   let lastError: unknown;
@@ -64,7 +76,7 @@ async function generateWithFallback(
     try {
       const response = await ai.models.generateContent({
         model,
-        contents: promptInput,
+        contents,
         config: {
           systemInstruction: SYSTEM_PROMPT,
           responseMimeType: 'application/json',
@@ -95,7 +107,7 @@ async function generateWithFallback(
 async function runPromptWithValidation(
   apiKey: string,
   model: string,
-  buildPrompt: (retryHint?: string) => string,
+  buildContents: (retryHint?: string) => ContentListUnion,
 ): Promise<ReportDraft> {
   if (!apiKey) {
     throw new Error(
@@ -108,8 +120,8 @@ async function runPromptWithValidation(
   let lastErrors: string[] = [];
 
   for (let attempt = 0; attempt <= MAX_VALIDATION_RETRIES; attempt++) {
-    const promptInput = buildPrompt(retryHint);
-    const rawText = await generateWithFallback(ai, model, promptInput);
+    const contents = buildContents(retryHint);
+    const rawText = await generateWithFallback(ai, model, contents);
 
     let parsedJson: unknown;
     try {
@@ -167,4 +179,28 @@ export async function summarizeManualNotesWithGemini(
       retryHint,
     ),
   );
+}
+
+/**
+ * Menganalisis foto atau voice note menggunakan Gemini Multimodal dan menyusun 3 field Monev.
+ */
+export async function summarizeMediaWithGemini(
+  options: SummarizeMediaOptions,
+): Promise<ReportDraft> {
+  return runPromptWithValidation(options.apiKey, options.model, (retryHint) => {
+    const promptText =
+      options.mode === 'photo_ai'
+        ? buildPhotoPromptInput(options.date, options.caption, retryHint)
+        : buildVoicePromptInput(options.date, retryHint);
+
+    return [
+      {
+        inlineData: {
+          mimeType: options.mimeType,
+          data: options.base64Data,
+        },
+      },
+      { text: promptText },
+    ];
+  });
 }

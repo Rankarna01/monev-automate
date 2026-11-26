@@ -31,7 +31,22 @@ export function getUserGitHubCredentials(
     return null;
   }
 
-  const token = decryptSecret(user.github_token_enc, getEncryptionSecret(config));
+  let token = '';
+  try {
+    token = decryptSecret(user.github_token_enc, getEncryptionSecret(config));
+  } catch {
+    // Fallback jika token sebelumnya dienkripsi dengan TELEGRAM_BOT_TOKEN sebelum ENCRYPTION_KEY diset
+    if (config.ENCRYPTION_KEY && config.ENCRYPTION_KEY !== config.TELEGRAM_BOT_TOKEN) {
+      try {
+        token = decryptSecret(user.github_token_enc, config.TELEGRAM_BOT_TOKEN);
+      } catch {
+        return null;
+      }
+    } else {
+      return null;
+    }
+  }
+
   if (!token) {
     return null;
   }

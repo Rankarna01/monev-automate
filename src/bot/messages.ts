@@ -6,6 +6,8 @@ import type { ReportDraft } from '../utils/validate.js';
 export const CALLBACK_ACTIONS = {
   SUMMARIZE: 'action:summarize',
   MANUAL_AI: 'action:manual_ai',
+  PHOTO_AI: 'action:photo_ai',
+  VOICE_AI: 'action:voice_ai',
   SKIP: 'action:skip',
   SNOOZE_30M: 'action:snooze_30m',
 } as const;
@@ -21,6 +23,8 @@ export const MENU_ACTIONS = {
   STATUS: 'menu:status',
   TES: 'menu:tes',
   MANUAL_AI: 'menu:manual_ai',
+  PHOTO_AI: 'menu:photo_ai',
+  VOICE_AI: 'menu:voice_ai',
   GITHUB: 'menu:github',
   REPO: 'menu:repo',
   GEMINI: 'menu:gemini',
@@ -35,7 +39,10 @@ export const MENU_ACTIONS = {
 export function buildReminderKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('📥 Dari GitHub', CALLBACK_ACTIONS.SUMMARIZE)
-    .text('✍️ Catatan AI', CALLBACK_ACTIONS.MANUAL_AI)
+    .text('✍️ Catatan Teks', CALLBACK_ACTIONS.MANUAL_AI)
+    .row()
+    .text('📷 Dari Foto', CALLBACK_ACTIONS.PHOTO_AI)
+    .text('🎤 Dari Voice', CALLBACK_ACTIONS.VOICE_AI)
     .row()
     .text('⏭️ Lewati', CALLBACK_ACTIONS.SKIP)
     .text('⏰ Ingatkan 30 menit', CALLBACK_ACTIONS.SNOOZE_30M);
@@ -49,7 +56,10 @@ export function buildGreetingMenuKeyboard(): InlineKeyboard {
     .text('📊 Status & Kuota', MENU_ACTIONS.STATUS)
     .text('📋 Buat Laporan', MENU_ACTIONS.TES)
     .row()
-    .text('✍️ Catatan AI', MENU_ACTIONS.MANUAL_AI)
+    .text('✍️ Catatan Teks', MENU_ACTIONS.MANUAL_AI)
+    .text('📷 Dari Foto', MENU_ACTIONS.PHOTO_AI)
+    .row()
+    .text('🎤 Dari Voice', MENU_ACTIONS.VOICE_AI)
     .text('🐙 Akun GitHub', MENU_ACTIONS.GITHUB)
     .row()
     .text('📚 Pilih Repo', MENU_ACTIONS.REPO)

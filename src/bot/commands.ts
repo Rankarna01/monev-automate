@@ -1,4 +1,4 @@
-import type { Bot } from 'grammy';
+import { InlineKeyboard, type Bot } from 'grammy';
 import {
   clearGeminiApiKey,
   getGeminiCredentials,
@@ -30,11 +30,13 @@ import {
   handleGeminiStatusAction,
   handleGitHubStatusAction,
   handleManualNotesPromptAction,
+  handleMediaModePromptAction,
   handleRepoListAction,
   handleRiwayatAction,
   handleStatusAction,
   handleTesAction,
   handleTutorialAction,
+  processMediaToDraft,
   resolveCurrentUser,
   type BotActionDeps,
 } from './actions.js';
@@ -44,6 +46,7 @@ import {
   buildGreetingMenuKeyboard,
   buildGreetingMessage,
   buildOnboardingStartMessage,
+  CALLBACK_ACTIONS,
 } from './messages.js';
 
 /**
@@ -534,5 +537,101 @@ export function registerCommands(
         reply_markup: buildGreetingMenuKeyboard(),
       },
     );
+  });
+
+  // Handler Foto: wajib memilih metode Foto dulu agar sistem akurat
+  bot.on('message:photo', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
+    const today = getTodayWibDate();
+    const report = await repo.getTodayReport(user.id, today);
+
+    if (report?.status !== 'menunggu_foto') {
+      await ctx.reply(
+        '📷 Pilih metode *📷 Dari Foto* terlebih dahulu agar sistem memproses foto ini sebagai laporan harian:',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: new InlineKeyboard().text(
+            '📷 Aktifkan Mode Foto',
+            CALLBACK_ACTIONS.PHOTO_AI,
+          ),
+        },
+      );
+      return;
+    }
+
+    const photos = ctx.message.photo;
+    const bestPhoto = photos[photos.length - 1];
+    if (!bestPhoto) return;
+
+    try {
+      await processMediaToDraft(ctx, deps, user, 'photo_ai', {
+        fileId: bestPhoto.file_id,
+        mimeType: 'image/jpeg',
+        caption: ctx.message.caption,
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error({ err: msg, userId: user.id, today }, 'Gagal memproses foto');
+      try {
+        await repo.updateStatus(user.id, today, 'gagal', { error: msg });
+      } catch {
+        // Abaikan jika transisi tidak valid
+      }
+      await ctx.reply(`❌ Gagal memproses foto: ${msg}`);
+    }
+  });
+
+  // Handler Voice Note & Audio: wajib memilih metode Voice dulu
+  bot.on(['message:voice', 'message:audio'], async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (!user) return;
+
+    const today = getTodayWibDate();
+    const report = await repo.getTodayReport(user.id, today);
+
+    if (report?.status !== 'menunggu_voice') {
+      await ctx.reply(
+        '🎤 Pilih metode *🎤 Dari Voice* terlebih dahulu agar sistem memproses rekaman suara ini sebagai laporan harian:',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: new InlineKeyboard().text(
+            '🎤 Aktifkan Mode Voice',
+            CALLBACK_ACTIONS.VOICE_AI,
+          ),
+        },
+      );
+      return;
+    }
+
+    const voiceOrAudio = ctx.message.voice ?? ctx.message.audio;
+    if (!voiceOrAudio) return;
+
+    try {
+      await processMediaToDraft(ctx, deps, user, 'voice_ai', {
+        fileId: voiceOrAudio.file_id,
+        mimeType: voiceOrAudio.mime_type ?? 'audio/ogg',
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error({ err: msg, userId: user.id, today }, 'Gagal memproses voice');
+      try {
+        await repo.updateStatus(user.id, today, 'gagal', { error: msg });
+      } catch {
+        // Abaikan jika transisi tidak valid
+      }
+      await ctx.reply(`❌ Gagal memproses voice note: ${msg}`);
+    }
+  });
+
+  bot.command('foto', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (user) await handleMediaModePromptAction(ctx, deps, user, 'photo_ai');
+  });
+
+  bot.command('voice', async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    if (user) await handleMediaModePromptAction(ctx, deps, user, 'voice_ai');
   });
 }

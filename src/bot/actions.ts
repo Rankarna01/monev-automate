@@ -1,5 +1,6 @@
-import type { Context } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import { getGeminiCredentials } from '../ai/config.js';
+import { summarizeMediaWithGemini } from '../ai/summarize.js';
 import type { AppConfig } from '../config.js';
 import type { ReportRepo, UserRecord } from '../db/repo.js';
 import { formatStatusLabel } from '../db/stateMachine.js';
@@ -10,6 +11,8 @@ import { formatScheduleDays } from '../scheduler/scheduleParser.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
 import {
+  buildDraftKeyboard,
+  buildDraftMessage,
   buildReminderKeyboard,
   buildReminderMessage,
   buildTutorialMessage,
@@ -337,4 +340,193 @@ export async function handleTutorialAction(
   user: UserRecord,
 ): Promise<void> {
   await ctx.reply(buildTutorialMessage(user), { parse_mode: 'Markdown' });
+}
+
+export interface MediaReference {
+  fileId: string;
+  mimeType: string;
+  caption?: string;
+}
+
+export function encodeMediaRef(ref: MediaReference): string {
+  return JSON.stringify(ref);
+}
+
+export function decodeMediaRef(raw: string | null): MediaReference | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<MediaReference>;
+    if (parsed.fileId && parsed.mimeType) {
+      return {
+        fileId: parsed.fileId,
+        mimeType: parsed.mimeType,
+        caption: parsed.caption,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Memasuki mode input Foto atau Voice Note agar sistem tahu metode yang dipilih user.
+ */
+export async function handleMediaModePromptAction(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+  mode: 'photo_ai' | 'voice_ai',
+): Promise<void> {
+  const today = getTodayWibDate();
+  const quota = await deps.repo.getAiQuotaStatus(
+    user.id,
+    today,
+    deps.config.AI_DAILY_LIMIT,
+  );
+
+  if (quota.remaining <= 0) {
+    await ctx.reply(
+      `⚠️ *Kuota AI harian kamu (${quota.used}/${quota.limit}) sudah habis.*\nKuota akan reset otomatis besok pukul 00:00 WIB.`,
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
+
+  const existing = await deps.repo.getTodayReport(user.id, today);
+  if (existing?.status === 'terkirim') {
+    await ctx.reply(
+      `ℹ️ Laporan tanggal \`${today}\` sudah berstatus *${formatStatusLabel(existing.status)}*.`,
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
+
+  if (
+    existing &&
+    (existing.status === 'dilewati' ||
+      existing.status === 'gagal' ||
+      existing.status === 'kedaluwarsa')
+  ) {
+    await deps.repo.resetNonSubmittedReport(user.id, today);
+  }
+
+  const nextStatus = mode === 'photo_ai' ? 'menunggu_foto' : 'menunggu_voice';
+  await deps.repo.createOrGetTodayReport(user.id, today, undefined, mode);
+  await deps.repo.updateStatus(user.id, today, nextStatus, {
+    sourceMode: mode,
+  });
+
+  if (mode === 'photo_ai') {
+    await ctx.reply(
+      [
+        '📷 *Mode Laporan dari Foto Aktif*',
+        `Sisa kuota AI hari ini: *${quota.remaining}/${quota.limit}*`,
+        '',
+        'Silakan kirim **foto kegiatan / screenshot pekerjaan / dokumen** (boleh tambah caption penjelasan).',
+        'AI akan menganalisis foto tersebut menjadi 3 kolom baku Monev.',
+      ].join('\n'),
+      { parse_mode: 'Markdown' },
+    );
+  } else {
+    await ctx.reply(
+      [
+        '🎤 *Mode Laporan dari Voice Note Aktif*',
+        `Sisa kuota AI hari ini: *${quota.remaining}/${quota.limit}*`,
+        '',
+        'Silakan rekam dan kirim **Voice Note (pesan suara)** yang menceritakan kegiatan kerjamu hari ini.',
+        'AI akan mendengarkan dan menyusunnya menjadi 3 kolom baku Monev.',
+      ].join('\n'),
+      { parse_mode: 'Markdown' },
+    );
+  }
+}
+
+/**
+ * Mengunduh file media dari Telegram Bot API dan mengonversinya menjadi Base64.
+ */
+async function downloadTelegramFileBase64(
+  bot: Bot | Context['api'],
+  botToken: string,
+  fileId: string,
+): Promise<string> {
+  const api = 'api' in bot ? bot.api : bot;
+  const file = await api.getFile(fileId);
+  if (!file.file_path) {
+    throw new Error('Path file Telegram tidak tersedia.');
+  }
+
+  const url = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Gagal mengunduh file dari Telegram (HTTP ${res.status})`);
+  }
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return buffer.toString('base64');
+}
+
+/**
+ * Memproses file foto atau voice note menjadi draf laporan Monev via Gemini Multimodal.
+ */
+export async function processMediaToDraft(
+  ctx: Context,
+  deps: BotActionDeps,
+  user: UserRecord,
+  mode: 'photo_ai' | 'voice_ai',
+  media: MediaReference,
+): Promise<void> {
+  const today = getTodayWibDate();
+  const gemini = await getGeminiCredentials(deps.config, deps.repo);
+  if (!gemini) {
+    await ctx.reply('❌ Layanan Gemini AI global belum diatur oleh admin.');
+    return;
+  }
+
+  const quota = await deps.repo.consumeAiQuota(
+    user.id,
+    today,
+    deps.config.AI_DAILY_LIMIT,
+  );
+
+  const encodedRef = encodeMediaRef(media);
+  await deps.repo.updateStatus(user.id, today, 'mengambil_data', {
+    sourceMode: mode,
+    manualNotes: encodedRef,
+  });
+
+  await ctx.reply(
+    mode === 'photo_ai'
+      ? '🔄 *Menganalisis foto kegiatan dengan Gemini AI...*'
+      : '🔄 *Mendengarkan & merangkum voice note dengan Gemini AI...*',
+    { parse_mode: 'Markdown' },
+  );
+
+  const base64Data = await downloadTelegramFileBase64(
+    ctx.api,
+    deps.config.TELEGRAM_BOT_TOKEN,
+    media.fileId,
+  );
+
+  const draft = await summarizeMediaWithGemini({
+    apiKey: gemini.apiKey,
+    model: gemini.model,
+    date: today,
+    mode,
+    mimeType: media.mimeType,
+    base64Data,
+    caption: media.caption,
+  });
+
+  const sent = await ctx.reply(buildDraftMessage(today, draft, quota), {
+    parse_mode: 'Markdown',
+    reply_markup: buildDraftKeyboard(),
+  });
+
+  await deps.repo.saveDraft(user.id, today, {
+    sourceMode: mode,
+    manualNotes: encodedRef,
+    ...draft,
+    telegramMessageId: sent.message_id,
+  });
 }

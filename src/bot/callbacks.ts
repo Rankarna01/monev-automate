@@ -16,14 +16,17 @@ import { formatScheduleDays } from '../scheduler/scheduleParser.js';
 import type { Logger } from '../utils/logger.js';
 import { getTodayWibDate } from '../utils/time.js';
 import {
+  decodeMediaRef,
   handleGeminiStatusAction,
   handleGitHubStatusAction,
   handleManualNotesPromptAction,
+  handleMediaModePromptAction,
   handleRepoListAction,
   handleRiwayatAction,
   handleStatusAction,
   handleTesAction,
   handleTutorialAction,
+  processMediaToDraft,
   resolveCurrentUser,
   type BotActionDeps,
 } from './actions.js';
@@ -77,6 +80,18 @@ export function registerCallbacks(
     const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
     if (user) await handleManualNotesPromptAction(ctx, deps, user);
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.PHOTO_AI, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    await ctx.answerCallbackQuery();
+    if (user) await handleMediaModePromptAction(ctx, deps, user, 'photo_ai');
+  });
+
+  bot.callbackQuery(MENU_ACTIONS.VOICE_AI, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    await ctx.answerCallbackQuery();
+    if (user) await handleMediaModePromptAction(ctx, deps, user, 'voice_ai');
   });
 
   bot.callbackQuery(MENU_ACTIONS.GITHUB, async (ctx) => {
@@ -163,8 +178,24 @@ export function registerCallbacks(
     const user = await resolveCurrentUser(ctx, repo);
     await ctx.answerCallbackQuery();
     if (!user) return;
-    await disableInlineButtons(ctx, '✍️ *Mode Catatan Kegiatan AI dipilih.*');
+    await disableInlineButtons(ctx, '✍️ *Mode Catatan Teks AI dipilih.*');
     await handleManualNotesPromptAction(ctx, deps, user);
+  });
+
+  bot.callbackQuery(CALLBACK_ACTIONS.PHOTO_AI, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    await ctx.answerCallbackQuery();
+    if (!user) return;
+    await disableInlineButtons(ctx, '📷 *Mode Laporan dari Foto dipilih.*');
+    await handleMediaModePromptAction(ctx, deps, user, 'photo_ai');
+  });
+
+  bot.callbackQuery(CALLBACK_ACTIONS.VOICE_AI, async (ctx) => {
+    const user = await resolveCurrentUser(ctx, repo);
+    await ctx.answerCallbackQuery();
+    if (!user) return;
+    await disableInlineButtons(ctx, '🎤 *Mode Laporan dari Voice Note dipilih.*');
+    await handleMediaModePromptAction(ctx, deps, user, 'voice_ai');
   });
 
   bot.callbackQuery(CALLBACK_ACTIONS.SUMMARIZE, async (ctx) => {
@@ -389,6 +420,24 @@ export function registerCallbacks(
           text: 'Data sumber tidak ditemukan. Mulai ulang dengan /tes.',
           show_alert: true,
         });
+        return;
+      }
+
+      if (
+        (report.source_mode === 'photo_ai' || report.source_mode === 'voice_ai') &&
+        report.manual_notes
+      ) {
+        const mediaRef = decodeMediaRef(report.manual_notes);
+        if (!mediaRef) {
+          await ctx.answerCallbackQuery({
+            text: 'Referensi media tidak ditemukan. Kirim ulang foto/voice.',
+            show_alert: true,
+          });
+          return;
+        }
+        await ctx.answerCallbackQuery({ text: 'Membuat ulang draf dari media...' });
+        await disableInlineButtons(ctx, '🔄 *Membuat ulang draf dari media dengan Gemini...*');
+        await processMediaToDraft(ctx, deps, user, report.source_mode, mediaRef);
         return;
       }
 

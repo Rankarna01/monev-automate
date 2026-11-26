@@ -3,7 +3,7 @@ import type { CommitSummaryItem } from '../github/commits.js';
 export const SYSTEM_PROMPT = `Kamu adalah asisten yang menyusun laporan harian magang (Monev) dalam bahasa Indonesia yang formal, jelas, dan ringkas.
 
 ATURAN WAJIB:
-1. Gunakan HANYA informasi fakta dari daftar pekerjaan, catatan pengguna, dan daftar file yang diberikan. DILARANG mengarang pekerjaan atau fitur yang tidak ada pada sumber.
+1. Gunakan HANYA informasi fakta dari daftar pekerjaan, catatan pengguna, foto, atau rekaman suara yang diberikan. DILARANG mengarang pekerjaan atau fitur yang tidak ada pada sumber.
 2. FOKUS PADA FITUR & FUNGSI: Jelaskan langsung fitur, modul, tampilan, kegiatan, atau perbaikan yang dikerjakan dan manfaatnya bagi pengguna/sistem.
 3. LARANGAN ISTILAH GIT: JANGAN PERNAH menyebut kata "merge", "merging", "branch", "commit", "push", "pull request", "PR", "konflik kode", atau nama branch (seperti "staging", "main", "dev", atau nama orang/branch). Ubah pesan yang berasal dari aktivitas git menjadi deskripsi pekerjaan fitur secara langsung.
 4. Keluarkan JSON murni dengan tepat tiga field: "aktivitas", "pembelajaran", dan "kendala".
@@ -70,6 +70,51 @@ export function buildManualNotesPromptInput(
     );
     sections.push('', 'Aktivitas teknis tambahan:', ...commitLines);
   }
+
+  if (retryHint) {
+    sections.push('', `CATATAN PERBAIKAN (WAJIB DIPENUHI): ${retryHint}`);
+  }
+
+  return sections.join('\n');
+}
+
+/**
+ * Menyusun prompt input untuk mengembangkan foto kegiatan/dokumen/screenshot menjadi format Monev.
+ */
+export function buildPhotoPromptInput(
+  date: string,
+  caption?: string,
+  retryHint?: string,
+): string {
+  const sections = [
+    `Tanggal laporan: ${date}`,
+    'Mode: Analisis foto kegiatan/pekerjaan/screenshot yang dikirim pengguna, lalu susun menjadi format baku Monev.',
+    'Perhatikan konteks visual pada foto (kode, tampilan UI, rapat, dokumen, atau aktivitas kerja) dan jelaskan secara formal tanpa mengarang hal di luar foto/caption.',
+  ];
+
+  if (caption?.trim()) {
+    sections.push('', `Keterangan tambahan (caption) dari pengguna: ${caption.trim()}`);
+  }
+
+  if (retryHint) {
+    sections.push('', `CATATAN PERBAIKAN (WAJIB DIPENUHI): ${retryHint}`);
+  }
+
+  return sections.join('\n');
+}
+
+/**
+ * Menyusun prompt input untuk mengembangkan pesan suara (voice note) pengguna menjadi format Monev.
+ */
+export function buildVoicePromptInput(
+  date: string,
+  retryHint?: string,
+): string {
+  const sections = [
+    `Tanggal laporan: ${date}`,
+    'Mode: Dengarkan rekaman suara (voice note) pengguna yang menjelaskan aktivitas kerja hari ini, lalu susun menjadi format baku Monev.',
+    'Tangkap seluruh poin kegiatan, pembelajaran, dan kendala yang disebutkan pengguna dalam suara tersebut dengan bahasa Indonesia formal.',
+  ];
 
   if (retryHint) {
     sections.push('', `CATATAN PERBAIKAN (WAJIB DIPENUHI): ${retryHint}`);
